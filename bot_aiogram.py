@@ -15,12 +15,13 @@ import socket
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, FSInputFile
+from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.client.session.aiohttp import AiohttpSession
 
 import config
 from audio_utils import format_duration, format_bytes, async_extract_audio, safe_remove, sanitize_filename, create_docx_report
 from transcriber import transcriber
+from video_uniquifier import async_uniquify_video
 
 class IPv4AiohttpSession(AiohttpSession):
     """Ensures IPv4 connection to avoid Windows IPv6 semaphore timeout issues."""
@@ -121,6 +122,21 @@ def get_file_info(message: Message):
     return None, None, None, None
 
 
+user_modes = {}  # user_id -> 'transcribe' | 'uniqueize'
+
+
+def get_mode_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="🎙️ Видео в Текст"),
+                KeyboardButton(text="✨ Уникализировать видео")
+            ]
+        ],
+        resize_keyboard=True
+    )
+
+
 def check_access(user_id: int) -> bool:
     if not config.ALLOWED_USERS:
         return True
@@ -133,17 +149,45 @@ async def start_handler(message: Message):
         await message.answer("⛔ **Доступ ограничен.**\nВы не авторизованы для использования этого бота.", parse_mode="Markdown")
         return
 
+    user_modes[message.from_user.id] = "transcribe"
     welcome_text = (
-        "👋 **Привет! Я бот для перевода видео и аудио в текст.**\n\n"
-        "⚡ **Что я умею:**\n"
-        "• Переводить в текст любые **видео** (mp4, mkv, mov, avi и др.)\n"
-        "• Обрабатывать **видеосообщения (кружочки)**\n"
-        "• Распознавать **голосовые сообщения и аудиозаписи**\n"
-        "• Создавать готовые файлы субтитров **.srt** и текст с таймкодами\n\n"
-        "🚀 **Как пользоваться:**\n"
-        "Просто отправьте мне видео, кружочек или аудиофайл сюда в чат!"
+        "👋 **Привет! Я бот для работы с видео и аудио.**\n\n"
+        "⚡ **Выберите нужный режим кнопками ниже:**\n\n"
+        "1️⃣ **🎙️ Видео в Текст:**\n"
+        "• Распознавание речи из видео, кружочков, аудио и голосовых\n"
+        "• Создание субтитров `.srt`, текста с таймкодами и документа Word `.docx`\n\n"
+        "2️⃣ **✨ Уникализировать видео:**\n"
+        "• Подготовка видео для **Instagram Reels, TikTok и Shorts**\n"
+        "• Уникализация **без потери качества** (микро-зум, перцептивный шум, цветовой сдвиг, смена аудиохэша, очистка метаданных)\n"
+        "• Позволяет обойти фильтры повторного контента и теневой бан"
     )
-    await message.answer(welcome_text, parse_mode="Markdown")
+    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_mode_keyboard())
+
+
+@dp.message(F.text == "🎙️ Видео в Текст")
+async def mode_transcribe_handler(message: Message):
+    if not check_access(message.from_user.id):
+        return
+    user_modes[message.from_user.id] = "transcribe"
+    await message.answer(
+        "🎙️ **Включен режим: Видео в Текст**\n\n"
+        "Отправьте мне видео, кружочек, аудиофайл или голосовое сообщение — я переведу речь в текст, создам файл субтитров .srt и документ Word!",
+        parse_mode="Markdown",
+        reply_markup=get_mode_keyboard()
+    )
+
+
+@dp.message(F.text == "✨ Уникализировать видео")
+async def mode_uniqueize_handler(message: Message):
+    if not check_access(message.from_user.id):
+        return
+    user_modes[message.from_user.id] = "uniqueize"
+    await message.answer(
+        "✨ **Включен режим: Уникализация видео**\n\n"
+        "Отправьте мне видео или кружочек — я уникализирую его без потери качества (микро-зум, микро-сдвиг цветов, перцептивный шум, замена аудиохэша и очистка метаданных) для безопасного размещения в **Instagram Reels, TikTok и Shorts**!",
+        parse_mode="Markdown",
+        reply_markup=get_mode_keyboard()
+    )
 
 
 @dp.message(Command("help"))
@@ -223,6 +267,7 @@ async def media_handler(message: Message, bot: Bot):
         txt_path = config.TEMP_DIR / f"{base_name}.txt"
         srt_path = config.TEMP_DIR / f"{base_name}.srt"
         docx_path = config.TEMP_DIR / f"{base_name}.docx"
+        unique_video_path = config.TEMP_DIR / f"{unique_prefix}_unique.mp4"
 
         try:
             # 1. Download
@@ -232,6 +277,43 @@ async def media_handler(message: Message, bot: Bot):
 
             if not download_path.exists() or download_path.stat().st_size == 0:
                 await status_msg.edit_text("❌ Ошибка при скачивании файла из Telegram.")
+                return
+
+            # Check User Mode
+            user_mode = user_modes.get(message.from_user.id, "transcribe")
+
+            if user_mode == "uniqueize":
+                is_video = message.video or message.video_note or (message.document and ((message.document.mime_type or "").startswith("video/") or ext in {".mp4", ".mov", ".mkv", ".avi", ".webm"}))
+                if not is_video:
+                    await status_msg.edit_text("⚠️ В режиме уникализации поддерживаются только видеофайлы и кружочки. Для аудио переключитесь кнопкой на режим 🎙️ Видео в Текст.")
+                    return
+
+                await status_msg.edit_text(
+                    "✨ **Уникализация видео...**\n"
+                    "Применение микро-зума, перцептивного шума, цветокоррекции и очистки метаданных...",
+                    parse_mode="Markdown"
+                )
+                success, err_msg = await async_uniquify_video(download_path, unique_video_path)
+                if not success:
+                    await status_msg.edit_text(f"❌ {err_msg}")
+                    return
+
+                orig_size = format_bytes(download_path.stat().st_size)
+                new_size = format_bytes(unique_video_path.stat().st_size)
+
+                await status_msg.edit_text(
+                    f"🎬 **Видео успешно уникализировано!**\n\n"
+                    f"📐 **Качество:** Исходное (CRF 18 visually lossless)\n"
+                    f"📦 **Размер:** `{new_size}` (исходный: `{orig_size}`)\n"
+                    f"🛡️ **Изменения:** Микро-зум 1.5%, перцептивный шум, сдвиг аудиохэша, очистка метаданных.\n"
+                    f"🚀 Видео готово к публикации в **Instagram Reels, TikTok и Shorts**!",
+                    parse_mode="Markdown"
+                )
+
+                await message.reply_video(
+                    video=FSInputFile(str(unique_video_path)),
+                    caption=f"✨ Уникализированное видео ({base_name})"
+                )
                 return
 
             # 2. Extract Audio
@@ -352,6 +434,7 @@ async def media_handler(message: Message, bot: Bot):
             safe_remove(txt_path)
             safe_remove(srt_path)
             safe_remove(docx_path)
+            safe_remove(unique_video_path)
     finally:
         task_queue.release()
 
