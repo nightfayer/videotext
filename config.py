@@ -62,6 +62,7 @@ MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "1"))
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
 NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning").strip()
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip()
+AI_PROXY = os.getenv("AI_PROXY", "").strip() or None
 
 # Whitelist of allowed Telegram user IDs (empty set = public bot)
 allowed_users_raw = os.getenv("ALLOWED_USERS", "").strip()

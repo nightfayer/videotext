@@ -64,8 +64,23 @@ async def generate_ai_summary(
 
     for attempt in range(1, max_retries + 1):
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, headers=headers, json=payload) as resp:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+                post_kwargs = {"headers": headers, "json": payload}
+                if config.AI_PROXY:
+                    post_kwargs["proxy"] = config.AI_PROXY
+
+                async with session.post(url, **post_kwargs) as resp:
+                    if resp.status == 451:
+                        err_body = await resp.text()
+                        logger.error(f"[NVIDIA API Geo-Block 451]: {err_body}")
+                        return False, (
+                            "⛔ Ошибка 451 (Геоблокировка NVIDIA):\n"
+                            "IP-адрес вашего сервера заблокирован NVIDIA по региональному признаку (РФ).\n\n"
+                            "💡 Как исправить:\n"
+                            "1. Укажите зарубежный прокси в `.env` на сервере: `AI_PROXY=http://логин:пароль@ip:порт` (или socks5://)\n"
+                            "2. Либо используйте сервер за пределами РФ."
+                        )
+
                     if resp.status in (429, 502, 503, 504) and attempt < max_retries:
                         logger.warning(f"[NVIDIA API Busy {resp.status}], attempt {attempt}/{max_retries}. Retrying in 2s...")
                         await asyncio.sleep(2.0 * attempt)
