@@ -193,7 +193,7 @@ async def start_handler(message: Message):
         "1️⃣ **🎙️ Видео в Текст:**\n"
         "• Распознавание речи из видео, кружочков, аудио и голосовых\n"
         "• Создание субтитров `.srt`, текста с таймкодами и документа Word `.docx`\n"
-        "• 🧠 **AI-Саммари и Пост:** генерация тезисов, готового поста и хэштегов (NVIDIA Nemotron 30B)\n\n"
+        "• 🧠 **AI-Саммари и Пост:** генерация тезисов, готового поста и хэштегов нейросетью\n\n"
         "2️⃣ **✨ Уникализировать видео:**\n"
         "• Подготовка видео для **Instagram Reels, TikTok и Shorts**\n"
         "• Уникализация **без потери качества** (микро-зум, перцептивный шум, цветовой сдвиг, смена аудиохэша, очистка метаданных)\n"
@@ -265,10 +265,10 @@ async def ai_summary_callback_handler(callback: CallbackQuery):
     text = data["text"]
     base_name = data.get("base_name", "Аудиозапись")
 
-    await callback.answer("🧠 Запускаю анализ нейросетью NVIDIA Nemotron...")
+    await callback.answer("🧠 Запускаю анализ нейросетью...")
     progress_msg = await callback.message.reply(
         "🧠 **Генерация AI-Саммари и готового поста...**\n"
-        "Модель: `NVIDIA Nemotron 30B Reasoning` ⚡\n"
+        f"Модель: `{config.NVIDIA_MODEL}` ⚡\n"
         "Выделяю главные мысли, оформляю пост и подбираю хэштеги...",
         parse_mode="Markdown"
     )
@@ -279,7 +279,7 @@ async def ai_summary_callback_handler(callback: CallbackQuery):
         return
 
     full_response = (
-        f"✨ **Умный анализ контента (NVIDIA Nemotron):**\n"
+        f"✨ **Умный анализ контента ({config.NVIDIA_MODEL}):**\n"
         f"📁 Файл: `{base_name}`\n\n"
         f"{ai_result}"
     )
@@ -318,14 +318,14 @@ async def ai_summary_cmd_handler(message: Message):
             "💡 **Как использовать AI-анализ:**\n\n"
             "1. Ответьте командой `/summary` на любое сообщение с текстом или транскрибацией.\n"
             "2. Либо отправьте: `/summary <ваш текст>`\n\n"
-            "Нейросеть **NVIDIA Nemotron 30B** выделит главные мысли, напишет готовый пост и подберет хэштеги!",
+            "Нейросеть выделит главные мысли, напишет готовый пост и подберет хэштеги!",
             parse_mode="Markdown"
         )
         return
 
     progress_msg = await message.reply(
         "🧠 **Генерация AI-Саммари и готового поста...**\n"
-        "Модель: `NVIDIA Nemotron 30B Reasoning` ⚡",
+        f"Модель: `{config.NVIDIA_MODEL}` ⚡",
         parse_mode="Markdown"
     )
 
