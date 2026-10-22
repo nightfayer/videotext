@@ -55,8 +55,12 @@ async def generate_ai_summary(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Вот расшифровка речи:\n\n{clean_text}"}
         ],
+        "chat_template_kwargs": {
+            "enable_thinking": True
+        },
         "max_tokens": max_tokens,
-        "temperature": temperature
+        "temperature": temperature,
+        "top_p": 0.95
     }
 
     timeout = aiohttp.ClientTimeout(total=90)
