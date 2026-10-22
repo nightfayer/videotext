@@ -125,6 +125,42 @@ def get_file_info(message: Message):
 user_modes = {}  # user_id -> 'transcribe' | 'uniqueize'
 
 
+class ThrottledUniquifyProgress:
+    def __init__(self, message: Message, action_title="Уникализация видео"):
+        self.message = message
+        self.action_title = action_title
+        self.last_update_time = 0.0
+        self.last_percent = -1
+
+    async def callback(self, current_sec: float, total_sec: float, speed_str: str = ""):
+        if not total_sec or total_sec <= 0:
+            return
+
+        percent = min(100, int((current_sec / total_sec) * 100))
+        now = time.time()
+
+        if (now - self.last_update_time >= 2.5) or (percent - self.last_percent >= 10) or (percent == 100):
+            self.last_update_time = now
+            self.last_percent = percent
+            progress_bar = "█" * (percent // 10) + "░" * (10 - (percent // 10))
+
+            cur_min, cur_s = divmod(int(current_sec), 60)
+            tot_min, tot_s = divmod(int(total_sec), 60)
+            time_str = f"{cur_min:02d}:{cur_s:02d} / {tot_min:02d}:{tot_s:02d}"
+
+            speed_info = f" • Скорость: `{speed_str}`" if speed_str else ""
+            text = (
+                f"✨ **{self.action_title}**: `{percent}%`\n"
+                f"`[{progress_bar}]`\n"
+                f"⏱️ `{time_str}`{speed_info}\n"
+                f"⚙️ Микро-зум, перцептивный шум, цветокоррекция, метаданные"
+            )
+            try:
+                await self.message.edit_text(text, parse_mode="Markdown")
+            except Exception:
+                pass
+
+
 def get_mode_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -288,12 +324,20 @@ async def media_handler(message: Message, bot: Bot):
                     await status_msg.edit_text("⚠️ В режиме уникализации поддерживаются только видеофайлы и кружочки. Для аудио переключитесь кнопкой на режим 🎙️ Видео в Текст.")
                     return
 
+                uniq_progress = ThrottledUniquifyProgress(
+                    status_msg,
+                    action_title="Уникализация видео"
+                )
                 await status_msg.edit_text(
                     "✨ **Уникализация видео...**\n"
                     "Применение микро-зума, перцептивного шума, цветокоррекции и очистки метаданных...",
                     parse_mode="Markdown"
                 )
-                success, err_msg = await async_uniquify_video(download_path, unique_video_path)
+                success, err_msg = await async_uniquify_video(
+                    download_path,
+                    unique_video_path,
+                    progress_callback=uniq_progress.callback
+                )
                 if not success:
                     await status_msg.edit_text(f"❌ {err_msg}")
                     return
