@@ -15,7 +15,7 @@ import socket
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BotCommand
 from aiogram.client.session.aiohttp import AiohttpSession
 
 import config
@@ -170,7 +170,8 @@ def get_mode_keyboard():
                 KeyboardButton(text="✨ Уникализировать видео")
             ],
             [
-                KeyboardButton(text="✍️ Написать ТГ-пост")
+                KeyboardButton(text="✍️ Написать ТГ-пост"),
+                KeyboardButton(text="🚀 Меню / Старт")
             ]
         ],
         resize_keyboard=True
@@ -184,6 +185,7 @@ def check_access(user_id: int) -> bool:
 
 
 @dp.message(Command("start"))
+@dp.message(F.text == "🚀 Меню / Старт")
 async def start_handler(message: Message):
     if not check_access(message.from_user.id):
         await message.answer("⛔ **Доступ ограничен.**\nВы не авторизованы для использования этого бота.", parse_mode="Markdown")
@@ -303,7 +305,7 @@ async def text_handler(message: Message):
     if not text:
         return
 
-    if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост"]:
+    if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост", "🚀 Меню / Старт"]:
         return
 
     current_mode = user_modes.get(message.from_user.id, "transcribe")
@@ -598,6 +600,20 @@ async def run_aiogram_bot():
     print("🚀 Подготовка Whisper модели...")
     transcriber.ensure_model_loaded()
     me = await bot.get_me()
+
+    # Регистрация меню команд в интерфейсе Telegram
+    try:
+        commands = [
+            BotCommand(command="start", description="🚀 Главное меню / Перезапуск"),
+            BotCommand(command="post", description="✍️ Оформить красивый ТГ-пост"),
+            BotCommand(command="help", description="📖 Инструкция и возможности"),
+            BotCommand(command="settings", description="⚙️ Настройки и статус"),
+        ]
+        await bot.set_my_commands(commands)
+        print("✅ Меню команд Telegram (/start, /post, /help) успешно установлено!")
+    except Exception as e:
+        print(f"⚠️ Не удалось зарегистрировать меню команд: {e}")
+
     print(f"✅ Бот @{me.username} успешно запущен в стандартном режиме (aiogram) и ожидает файлы в Telegram!")
     await dp.start_polling(bot)
 

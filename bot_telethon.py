@@ -11,7 +11,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from telethon import TelegramClient, events, Button
+from telethon import TelegramClient, events, Button, functions, types
 from telethon.tl.types import (
     DocumentAttributeVideo,
     DocumentAttributeAudio,
@@ -211,7 +211,8 @@ def get_mode_keyboard():
             Button.text("✨ Уникализировать видео", resize=True)
         ],
         [
-            Button.text("✍️ Написать ТГ-пост", resize=True)
+            Button.text("✍️ Написать ТГ-пост", resize=True),
+            Button.text("🚀 Меню / Старт", resize=True)
         ]
     ]
 
@@ -222,7 +223,7 @@ def check_access(sender_id: int) -> bool:
     return sender_id in config.ALLOWED_USERS
 
 
-@client.on(events.NewMessage(incoming=True, pattern=r'^/start$'))
+@client.on(events.NewMessage(incoming=True, pattern=r'^(/start|🚀 Меню / Старт)$'))
 async def start_handler(event):
     if not check_access(event.sender_id):
         await event.respond("⛔ **Доступ ограничен.**\nВы не авторизованы для использования этого бота.")
@@ -391,7 +392,7 @@ async def text_handler(event):
     if not text:
         return
 
-    if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост"]:
+    if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост", "🚀 Меню / Старт"]:
         return
 
     current_mode = user_modes.get(event.sender_id, "transcribe")
@@ -711,6 +712,24 @@ def main():
     print("🚀 Подключение к Telegram (режим 2 ГБ / Telethon)...", flush=True)
     client.start(bot_token=config.BOT_TOKEN)
     me = client.loop.run_until_complete(client.get_me())
+
+    # Регистрация меню команд в интерфейсе Telegram
+    try:
+        commands = [
+            types.BotCommand(command="start", description="🚀 Главное меню / Перезапуск"),
+            types.BotCommand(command="post", description="✍️ Оформить красивый ТГ-пост"),
+            types.BotCommand(command="help", description="📖 Инструкция и возможности"),
+            types.BotCommand(command="settings", description="⚙️ Настройки и статус"),
+        ]
+        client.loop.run_until_complete(client(functions.bots.SetBotCommandsRequest(
+            scope=types.BotCommandScopeDefault(),
+            lang_code="",
+            commands=commands
+        )))
+        print("✅ Меню команд Telegram (/start, /post, /help) успешно установлено!", flush=True)
+    except Exception as e:
+        print(f"⚠️ Не удалось зарегистрировать меню команд: {e}", flush=True)
+
     print(f"✅ Бот @{me.username} успешно запущен и ожидает файлы до 2 ГБ в Telegram!", flush=True)
     client.run_until_disconnected()
 
