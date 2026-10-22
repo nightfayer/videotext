@@ -15,13 +15,14 @@ import socket
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.client.session.aiohttp import AiohttpSession
 
 import config
 from audio_utils import format_duration, format_bytes, async_extract_audio, safe_remove, sanitize_filename, create_docx_report
 from transcriber import transcriber
 from video_uniquifier import async_uniquify_video
+from ai_assistant import generate_ai_summary
 
 class IPv4AiohttpSession(AiohttpSession):
     """Ensures IPv4 connection to avoid Windows IPv6 semaphore timeout issues."""
@@ -191,7 +192,8 @@ async def start_handler(message: Message):
         "⚡ **Выберите нужный режим кнопками ниже:**\n\n"
         "1️⃣ **🎙️ Видео в Текст:**\n"
         "• Распознавание речи из видео, кружочков, аудио и голосовых\n"
-        "• Создание субтитров `.srt`, текста с таймкодами и документа Word `.docx`\n\n"
+        "• Создание субтитров `.srt`, текста с таймкодами и документа Word `.docx`\n"
+        "• 🧠 **AI-Саммари и Пост:** генерация тезисов, готового поста и хэштегов (NVIDIA Nemotron 30B)\n\n"
         "2️⃣ **✨ Уникализировать видео:**\n"
         "• Подготовка видео для **Instagram Reels, TikTok и Shorts**\n"
         "• Уникализация **без потери качества** (микро-зум, перцептивный шум, цветовой сдвиг, смена аудиохэша, очистка метаданных)\n"
@@ -239,13 +241,114 @@ async def help_handler(message: Message):
         "3. После завершения бот пришлёт:\n"
         "   — Текст сообщения прямо в чат\n"
         "   — Текстовый файл `.txt` с полным текстом и таймкодами\n"
-        "   — Файл субтитров `.srt`\n\n"
+        "   — Файл субтитров `.srt` и форматированный документ Word `.docx`\n"
+        "4. Кнопка `🧠 Создать AI-Саммари и Пост` (или команда `/summary`) создаст краткую выжимку, готовый пост и хэштеги нейросетью!\n\n"
         f"⚙️ **Текущая конфигурация:**\n"
         f"• Модель Whisper: `{config.WHISPER_MODEL}`\n"
         f"• Устройство обработки: `{transcriber.device.upper()}`\n"
         f"• Точность (compute_type): `{transcriber.compute_type}`\n"
     )
     await message.answer(help_text, parse_mode="Markdown")
+
+
+transcription_cache = {}  # prefix_id -> {"text": str, "base_name": str}
+
+
+@dp.callback_query(F.data.startswith("aisum_"))
+async def ai_summary_callback_handler(callback: CallbackQuery):
+    prefix_id = callback.data.removeprefix("aisum_")
+    data = transcription_cache.get(prefix_id)
+    if not data or not data.get("text"):
+        await callback.answer("⚠️ Текст для анализа не найден (возможно, бот был перезапущен).", show_alert=True)
+        return
+
+    text = data["text"]
+    base_name = data.get("base_name", "Аудиозапись")
+
+    await callback.answer("🧠 Запускаю анализ нейросетью NVIDIA Nemotron...")
+    progress_msg = await callback.message.reply(
+        "🧠 **Генерация AI-Саммари и готового поста...**\n"
+        "Модель: `NVIDIA Nemotron 30B Reasoning` ⚡\n"
+        "Выделяю главные мысли, оформляю пост и подбираю хэштеги...",
+        parse_mode="Markdown"
+    )
+
+    success, ai_result = await generate_ai_summary(text)
+    if not success:
+        await progress_msg.edit_text(f"❌ {ai_result}")
+        return
+
+    full_response = (
+        f"✨ **Умный анализ контента (NVIDIA Nemotron):**\n"
+        f"📁 Файл: `{base_name}`\n\n"
+        f"{ai_result}"
+    )
+
+    if len(full_response) <= 4000:
+        try:
+            await progress_msg.edit_text(full_response, parse_mode="Markdown")
+        except Exception:
+            await progress_msg.edit_text(full_response, parse_mode=None)
+    else:
+        part1 = full_response[:3800]
+        part2 = full_response[3800:]
+        try:
+            await progress_msg.edit_text(part1, parse_mode="Markdown")
+            await callback.message.reply(part2, parse_mode="Markdown")
+        except Exception:
+            await progress_msg.edit_text(part1, parse_mode=None)
+            await callback.message.reply(part2, parse_mode=None)
+
+
+@dp.message(Command("summary"))
+@dp.message(Command("ai"))
+async def ai_summary_cmd_handler(message: Message):
+    if not check_access(message.from_user.id):
+        return
+
+    input_text = ""
+    args = message.text.split(maxsplit=1)
+    if len(args) > 1 and args[1].strip():
+        input_text = args[1].strip()
+    elif message.reply_to_message and (message.reply_to_message.text or message.reply_to_message.caption):
+        input_text = message.reply_to_message.text or message.reply_to_message.caption
+
+    if not input_text:
+        await message.reply(
+            "💡 **Как использовать AI-анализ:**\n\n"
+            "1. Ответьте командой `/summary` на любое сообщение с текстом или транскрибацией.\n"
+            "2. Либо отправьте: `/summary <ваш текст>`\n\n"
+            "Нейросеть **NVIDIA Nemotron 30B** выделит главные мысли, напишет готовый пост и подберет хэштеги!",
+            parse_mode="Markdown"
+        )
+        return
+
+    progress_msg = await message.reply(
+        "🧠 **Генерация AI-Саммари и готового поста...**\n"
+        "Модель: `NVIDIA Nemotron 30B Reasoning` ⚡",
+        parse_mode="Markdown"
+    )
+
+    success, ai_result = await generate_ai_summary(input_text)
+    if not success:
+        await progress_msg.edit_text(f"❌ {ai_result}")
+        return
+
+    full_response = f"✨ **AI-Саммари и готовый пост:**\n\n{ai_result}"
+    if len(full_response) <= 4000:
+        try:
+            await progress_msg.edit_text(full_response, parse_mode="Markdown")
+        except Exception:
+            await progress_msg.edit_text(full_response, parse_mode=None)
+    else:
+        part1 = full_response[:3800]
+        part2 = full_response[3800:]
+        try:
+            await progress_msg.edit_text(part1, parse_mode="Markdown")
+            await message.reply(part2, parse_mode="Markdown")
+        except Exception:
+            await progress_msg.edit_text(part1, parse_mode=None)
+            await message.reply(part2, parse_mode=None)
 
 
 @dp.message(Command("settings"))
@@ -433,8 +536,16 @@ async def media_handler(message: Message, bot: Bot):
                     f"📎 _Полный текст, субтитры и документ Word прикреплены ниже._"
                 )
 
+            # Cache text for AI features
+            transcription_cache[unique_prefix] = {"text": text, "base_name": base_name}
+            ai_kb = None
+            if config.NVIDIA_API_KEY:
+                ai_kb = InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🧠 Создать AI-Саммари и Пост", callback_data=f"aisum_{unique_prefix}")]]
+                )
+
             try:
-                await status_msg.edit_text(message_body, parse_mode="Markdown")
+                await status_msg.edit_text(message_body, parse_mode="Markdown", reply_markup=ai_kb)
             except Exception:
                 # Fallback to plain text if speech transcription contains broken markdown characters
                 try:
@@ -445,7 +556,7 @@ async def media_handler(message: Message, bot: Bot):
                         f"⚡ Время обработки: {proc_time:.1f} сек\n\n"
                     )
                     snippet = text if len(text) <= 3200 else text[:1500] + "..."
-                    await status_msg.edit_text(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None)
+                    await status_msg.edit_text(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None, reply_markup=ai_kb)
                 except Exception:
                     pass
 

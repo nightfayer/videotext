@@ -25,6 +25,7 @@ from audio_utils import format_duration, format_bytes, async_extract_audio, safe
 from fast_download import fast_download_file
 from transcriber import transcriber
 from video_uniquifier import async_uniquify_video
+from ai_assistant import generate_ai_summary
 
 # Использование MemorySession исключает блокировки файлов SQLite (database is locked) в Docker
 client = TelegramClient(
@@ -230,7 +231,8 @@ async def start_handler(event):
         "⚡ **Выберите нужный режим кнопками ниже:**\n\n"
         "1️⃣ **🎙️ Видео в Текст:**\n"
         "• Распознавание речи из видео, кружочков, аудио и голосовых\n"
-        "• Создание субтитров `.srt`, текста с таймкодами и документа Word `.docx`\n\n"
+        "• Создание субтитров `.srt`, текста с таймкодами и документа Word `.docx`\n"
+        "• 🧠 **AI-Саммари и Пост:** генерация тезисов, готового поста и хэштегов (NVIDIA Nemotron 30B)\n\n"
         "2️⃣ **✨ Уникализировать видео:**\n"
         "• Подготовка видео для **Instagram Reels, TikTok и Shorts**\n"
         "• Уникализация **без потери качества** (микро-зум, перцептивный шум, цветовой сдвиг, смена аудиохэша, очистка метаданных)\n"
@@ -277,7 +279,8 @@ async def help_handler(event):
         "3. После завершения бот пришлёт:\n"
         "   — Текст сообщения прямо в чат\n"
         "   — Текстовый файл `.txt` с полным текстом и таймкодами\n"
-        "   — Файл субтитров `.srt`\n\n"
+        "   — Файл субтитров `.srt` и форматированный документ Word `.docx`\n"
+        "4. Кнопка `🧠 Создать AI-Саммари и Пост` (или команда `/summary`) создаст краткую выжимку, готовый пост и хэштеги нейросетью!\n\n"
         f"⚙️ **Текущая конфигурация:**\n"
         f"• Режим: `Telethon (до 2 ГБ)`\n"
         f"• Модель Whisper: `{config.WHISPER_MODEL}`\n"
@@ -336,6 +339,105 @@ async def cancel_callback_handler(event):
         await event.edit("🚫 **Скачивание отменено пользователем.**", buttons=None)
     except Exception:
         pass
+
+
+transcription_cache = {}  # task_id -> {"text": str, "base_name": str}
+
+
+@client.on(events.CallbackQuery(pattern=r'^aisum_(.+)'))
+async def ai_summary_callback_handler(event):
+    data_str = event.data.decode("utf-8")
+    task_id = data_str.removeprefix("aisum_")
+
+    data = transcription_cache.get(task_id)
+    if not data or not data.get("text"):
+        await event.answer("⚠️ Текст для анализа не найден (возможно, бот был перезапущен).", alert=True)
+        return
+
+    text = data["text"]
+    base_name = data.get("base_name", "Аудиозапись")
+
+    await event.answer("🧠 Запускаю анализ нейросетью NVIDIA Nemotron...", alert=False)
+    progress_msg = await event.respond(
+        "🧠 **Генерация AI-Саммари и готового поста...**\n"
+        "Модель: `NVIDIA Nemotron 30B Reasoning` ⚡\n"
+        "Выделяю главные мысли, оформляю пост и подбираю хэштеги..."
+    )
+
+    success, ai_result = await generate_ai_summary(text)
+    if not success:
+        await progress_msg.edit(f"❌ {ai_result}")
+        return
+
+    full_response = (
+        f"✨ **Умный анализ контента (NVIDIA Nemotron):**\n"
+        f"📁 Файл: `{base_name}`\n\n"
+        f"{ai_result}"
+    )
+
+    if len(full_response) <= 4000:
+        try:
+            await progress_msg.edit(full_response)
+        except Exception:
+            await progress_msg.edit(full_response, parse_mode=None)
+    else:
+        part1 = full_response[:3800]
+        part2 = full_response[3800:]
+        try:
+            await progress_msg.edit(part1)
+            await event.respond(part2)
+        except Exception:
+            await progress_msg.edit(part1, parse_mode=None)
+            await event.respond(part2, parse_mode=None)
+
+
+@client.on(events.NewMessage(incoming=True, pattern=r'^/(summary|ai)(\s+.*)?$'))
+async def ai_summary_cmd_handler(event):
+    if not check_access(event.sender_id):
+        return
+
+    input_text = ""
+    if event.pattern_match.group(2) and event.pattern_match.group(2).strip():
+        input_text = event.pattern_match.group(2).strip()
+    elif event.is_reply:
+        reply_msg = await event.get_reply_message()
+        if reply_msg and reply_msg.text:
+            input_text = reply_msg.text
+
+    if not input_text:
+        await event.respond(
+            "💡 **Как использовать AI-анализ:**\n\n"
+            "1. Ответьте командой `/summary` на любое сообщение с текстом или транскрибацией.\n"
+            "2. Либо отправьте: `/summary <ваш текст>`\n\n"
+            "Нейросеть **NVIDIA Nemotron 30B** выделит главные мысли, напишет готовый пост и подберет хэштеги!"
+        )
+        return
+
+    progress_msg = await event.respond(
+        "🧠 **Генерация AI-Саммари и готового поста...**\n"
+        "Модель: `NVIDIA Nemotron 30B Reasoning` ⚡"
+    )
+
+    success, ai_result = await generate_ai_summary(input_text)
+    if not success:
+        await progress_msg.edit(f"❌ {ai_result}")
+        return
+
+    full_response = f"✨ **AI-Саммари и готовый пост:**\n\n{ai_result}"
+    if len(full_response) <= 4000:
+        try:
+            await progress_msg.edit(full_response)
+        except Exception:
+            await progress_msg.edit(full_response, parse_mode=None)
+    else:
+        part1 = full_response[:3800]
+        part2 = full_response[3800:]
+        try:
+            await progress_msg.edit(part1)
+            await event.respond(part2)
+        except Exception:
+            await progress_msg.edit(part1, parse_mode=None)
+            await event.respond(part2, parse_mode=None)
 
 
 def get_media_ext(message) -> str:
@@ -542,8 +644,14 @@ async def media_handler(event):
                     f"📎 _Полный текст, субтитры и документ Word прикреплены ниже._"
                 )
 
+            # Cache text for AI features
+            transcription_cache[task_id] = {"text": text, "base_name": base_name}
+            ai_button = None
+            if config.NVIDIA_API_KEY:
+                ai_button = [[Button.inline("🧠 Создать AI-Саммари и Пост", data=f"aisum_{task_id}")]]
+
             try:
-                await status_msg.edit(message_body)
+                await status_msg.edit(message_body, buttons=ai_button)
             except Exception:
                 # Fallback to plain text if speech transcription contains broken markdown characters
                 try:
@@ -554,7 +662,7 @@ async def media_handler(event):
                         f"⚡ Время обработки: {proc_time:.1f} сек\n\n"
                     )
                     snippet = text if len(text) <= 3200 else text[:1500] + "..."
-                    await status_msg.edit(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None)
+                    await status_msg.edit(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None, buttons=ai_button)
                 except Exception:
                     pass
 
