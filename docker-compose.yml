@@ -1,0 +1,16 @@
+services:
+  videotext-bot:
+    build: .
+    container_name: videotext-bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      # Кэш моделей Faster-Whisper (не скачивается заново при перезапусках контейнера)
+      - hf_models_cache:/root/.cache/huggingface
+      # Временная папка для обработки файлов
+      - ./temp:/app/temp
+
+volumes:
+  hf_models_cache:
+    driver: local

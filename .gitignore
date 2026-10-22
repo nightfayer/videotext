@@ -1,0 +1,29 @@
+# Секретные переменные окружения (НИКОГДА не коммитить в git!)
+.env
+env
+
+# Сессии авторизации Telegram (содержат токены и ключи доступа)
+sessions/
+*.session
+*.session-journal
+
+# Виртуальное окружение Python
+.venv/
+env/
+venv/
+
+# Временные файлы и кэш
+temp/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Логи
+*.log
+
+# Архивы
+*.zip
+
+# Системные файлы
+.DS_Store
+Thumbs.db

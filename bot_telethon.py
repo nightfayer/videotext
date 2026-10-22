@@ -1,0 +1,485 @@
+import asyncio
+import os
+import sys
+import time
+from pathlib import Path
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+from telethon import TelegramClient, events, Button
+from telethon.tl.types import (
+    DocumentAttributeVideo,
+    DocumentAttributeAudio,
+    DocumentAttributeFilename,
+)
+
+from telethon.sessions import MemorySession
+
+import config
+from audio_utils import format_duration, format_bytes, async_extract_audio, safe_remove, sanitize_filename, create_docx_report
+from fast_download import fast_download_file
+from transcriber import transcriber
+
+# Использование MemorySession исключает блокировки файлов SQLite (database is locked) в Docker
+client = TelegramClient(
+    MemorySession(),
+    config.API_ID or 1,
+    config.API_HASH or "none",
+    use_ipv6=False
+)
+
+class TaskQueueTracker:
+    """Manages concurrent processing tasks and notifies users of their queue position."""
+    def __init__(self, max_concurrent: int):
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.waiting = []
+        self.lock = asyncio.Lock()
+
+    async def acquire(self, status_msg):
+        async with self.lock:
+            self.waiting.append(status_msg)
+            pos = len(self.waiting)
+
+        if pos > 1:
+            try:
+                await status_msg.edit(f"⏳ **В очереди:** позиция `{pos}`\nОбработка начнётся автоматически, как только освободится сервер...")
+            except Exception:
+                pass
+
+        await self.semaphore.acquire()
+
+        async with self.lock:
+            if status_msg in self.waiting:
+                self.waiting.remove(status_msg)
+            for idx, msg in enumerate(self.waiting, start=1):
+                try:
+                    await msg.edit(f"⏳ **В очереди:** позиция `{idx}`\nОбработка начнётся автоматически...")
+                except Exception:
+                    pass
+
+    def release(self):
+        self.semaphore.release()
+
+task_queue = TaskQueueTracker(config.MAX_CONCURRENT_TASKS)
+
+MEDIA_EXTENSIONS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm", ".3gp", ".m4v", ".ts",
+    ".mp3", ".wav", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".flac", ".wma"
+}
+
+LANGUAGE_NAMES = {
+    "ru": "Русский",
+    "en": "Английский",
+    "uk": "Украинский",
+    "be": "Белорусский",
+    "kk": "Казахский",
+    "uz": "Узбекский",
+    "de": "Немецкий",
+    "fr": "Французский",
+    "es": "Испанский",
+    "it": "Итальянский",
+    "zh": "Китайский",
+    "ja": "Японский",
+    "ko": "Корейский",
+    "tr": "Турецкий",
+    "ar": "Арабский",
+    "pt": "Португальский",
+    "pl": "Польский",
+}
+
+
+def is_media_message(message) -> bool:
+    if message.video or message.video_note or message.audio or message.voice:
+        return True
+    if message.document:
+        mime = (message.document.mime_type or "").lower()
+        if mime.startswith("video/") or mime.startswith("audio/"):
+            return True
+        for attr in message.document.attributes:
+            if isinstance(attr, (DocumentAttributeVideo, DocumentAttributeAudio)):
+                return True
+            if isinstance(attr, DocumentAttributeFilename):
+                ext = Path(attr.file_name).suffix.lower()
+                if ext in MEDIA_EXTENSIONS:
+                    return True
+    return False
+
+
+def get_media_filename(message) -> str:
+    if message.file and message.file.name:
+        raw_name = Path(message.file.name).stem
+        return sanitize_filename(raw_name)
+    if message.video_note:
+        return f"circle_{int(time.time())}"
+    if message.voice:
+        return f"voice_{int(time.time())}"
+    if message.video:
+        return f"video_{int(time.time())}"
+    if message.audio:
+        return f"audio_{int(time.time())}"
+    return f"media_{int(time.time())}"
+
+
+class ThrottledProgress:
+    def __init__(self, message, action_title="Скачивание", buttons=None, cancel_event=None):
+        self.message = message
+        self.action_title = action_title
+        self.buttons = buttons
+        self.cancel_event = cancel_event
+        self.last_update_time = 0.0
+        self.last_percent = -1
+
+    async def callback(self, current: int, total: int):
+        if self.cancel_event and self.cancel_event.is_set():
+            raise asyncio.CancelledError("Download cancelled by user")
+        if not total:
+            return
+        percent = int((current / total) * 100)
+        now = time.time()
+
+        if (now - self.last_update_time >= 3.0) or (percent - self.last_percent >= 15) or (percent == 100):
+            self.last_update_time = now
+            self.last_percent = percent
+            progress_bar = "█" * (percent // 10) + "░" * (10 - (percent // 10))
+            text = (
+                f"📥 **{self.action_title}**: `{percent}%`\n"
+                f"`[{progress_bar}]`\n"
+                f"💾 {format_bytes(current)} / {format_bytes(total)}"
+            )
+            try:
+                await self.message.edit(text, buttons=self.buttons)
+            except Exception:
+                pass
+
+
+active_tasks = {}
+
+
+def check_access(sender_id: int) -> bool:
+    if not config.ALLOWED_USERS:
+        return True
+    return sender_id in config.ALLOWED_USERS
+
+
+@client.on(events.NewMessage(incoming=True, pattern=r'^/start$'))
+async def start_handler(event):
+    if not check_access(event.sender_id):
+        await event.respond("⛔ **Доступ ограничен.**\nВы не авторизованы для использования этого бота.")
+        return
+
+    welcome_text = (
+        "👋 **Привет! Я бот для перевода видео и аудио в текст.**\n\n"
+        "⚡ **Что я умею:**\n"
+        "• Переводить в текст любые **видео** (mp4, mkv, mov, avi и др.)\n"
+        "• Обрабатывать **видеосообщения (кружочки)**\n"
+        "• Распознавать **голосовые сообщения и аудиозаписи**\n"
+        "• Поддерживать **большие файлы (до 2 ГБ!)**\n"
+        "• Создавать готовые файлы субтитров **.srt** и текст с таймкодами\n\n"
+        "🚀 **Как пользоваться:**\n"
+        "Просто отправьте мне видео, кружочек или аудиофайл сюда в чат!"
+    )
+    await event.respond(welcome_text)
+
+
+@client.on(events.NewMessage(incoming=True, pattern=r'^/help$'))
+async def help_handler(event):
+    if not check_access(event.sender_id):
+        await event.respond("⛔ **Доступ ограничен.**")
+        return
+
+    help_text = (
+        "📖 **Инструкция по использованию:**\n\n"
+        "1. Отправьте файл видео (как видео или как документ без сжатия).\n"
+        "2. Бот скачает файл, извлечёт аудиодорожку и распознает речь с помощью нейросети Whisper.\n"
+        "3. После завершения бот пришлёт:\n"
+        "   — Текст сообщения прямо в чат\n"
+        "   — Текстовый файл `.txt` с полным текстом и таймкодами\n"
+        "   — Файл субтитров `.srt`\n\n"
+        f"⚙️ **Текущая конфигурация:**\n"
+        f"• Режим: `Telethon (до 2 ГБ)`\n"
+        f"• Модель Whisper: `{config.WHISPER_MODEL}`\n"
+        f"• Устройство обработки: `{transcriber.device.upper()}`\n"
+        f"• Точность (compute_type): `{transcriber.compute_type}`\n"
+    )
+    await event.respond(help_text)
+
+
+@client.on(events.NewMessage(incoming=True, pattern=r'^/settings$'))
+async def settings_handler(event):
+    if not check_access(event.sender_id):
+        await event.respond("⛔ **Доступ ограничен.**")
+        return
+
+    settings_text = (
+        "⚙️ **Настройки бота:**\n\n"
+        f"• **Режим:** `Telethon (файлы до 2 ГБ)`\n"
+        f"• **Whisper модель:** `{config.WHISPER_MODEL}`\n"
+        f"• **Устройство:** `{transcriber.device.upper()}`\n"
+        f"• **Compute Type:** `{transcriber.compute_type}`\n"
+        f"• **Язык распознавания:** `{config.WHISPER_LANGUAGE or 'Автоопределение'}`\n"
+        f"• **Поиск гипотез (beam_size):** `{config.BEAM_SIZE}`\n"
+        f"• **Одновременных задач:** `{config.MAX_CONCURRENT_TASKS}`\n\n"
+        "💡 Для изменения параметров отредактируйте файл `.env` и перезапустите бота."
+    )
+    await event.respond(settings_text)
+
+
+@client.on(events.CallbackQuery(pattern=r'^cancel_(.+)'))
+async def cancel_callback_handler(event):
+    data_str = event.data.decode("utf-8")
+    task_id = data_str.removeprefix("cancel_")
+
+    task_info = active_tasks.get(task_id)
+    if not task_info:
+        await event.answer("⚠️ Задача уже завершена или не найдена.", alert=True)
+        try:
+            await event.edit("🚫 **Задача завершена или отменена.**", buttons=None)
+        except Exception:
+            pass
+        return
+
+    # Check access: only original sender or allowed users can cancel
+    if event.sender_id != task_info["sender_id"] and not check_access(event.sender_id):
+        await event.answer("⛔ Вы не можете отменить чужую задачу.", alert=True)
+        return
+
+    task_info["cancel_event"].set()
+    task = task_info.get("task")
+    if task and not task.done():
+        task.cancel()
+
+    await event.answer("Загрузка отменяется...", alert=False)
+    try:
+        await event.edit("🚫 **Скачивание отменено пользователем.**", buttons=None)
+    except Exception:
+        pass
+
+
+def get_media_ext(message) -> str:
+    if message.video:
+        return ".mp4"
+    if message.video_note:
+        return ".mp4"
+    if message.voice:
+        return ".ogg"
+    if message.audio:
+        if message.file and message.file.name:
+            return Path(message.file.name).suffix or ".mp3"
+        return ".mp3"
+    if message.document and message.file and message.file.name:
+        return Path(message.file.name).suffix or ".mp4"
+    return ".mp4"
+
+
+@client.on(events.NewMessage(incoming=True, func=is_media_message))
+async def media_handler(event):
+    if not check_access(event.sender_id):
+        await event.reply("⛔ **Доступ ограничен.**\nВы не авторизованы для использования этого бота.")
+        return
+
+    message = event.message
+    file_size = message.file.size if message.file else 0
+
+    status_msg = await event.reply("⏳ Добавлено в очередь на обработку...")
+
+    await task_queue.acquire(status_msg)
+    try:
+        base_name = get_media_filename(message)
+        ext = get_media_ext(message)
+        timestamp_id = int(time.time() * 1000)
+        unique_prefix = f"{timestamp_id}_{message.sender_id}"
+        task_id = f"{message.chat_id}_{timestamp_id}"
+
+        download_path = config.TEMP_DIR / f"{unique_prefix}_input{ext}"
+        audio_wav_path = config.TEMP_DIR / f"{unique_prefix}_audio.wav"
+        txt_path = config.TEMP_DIR / f"{base_name}.txt"
+        srt_path = config.TEMP_DIR / f"{base_name}.srt"
+        docx_path = config.TEMP_DIR / f"{base_name}.docx"
+
+        cancel_event = asyncio.Event()
+        current_task = asyncio.current_task()
+        active_tasks[task_id] = {
+            "cancel_event": cancel_event,
+            "task": current_task,
+            "sender_id": message.sender_id,
+            "status_msg": status_msg
+        }
+
+        cancel_btn = [[Button.inline("❌ Отменить", data=f"cancel_{task_id}")]]
+
+        try:
+            # 1. High-Speed Download with Cancel button
+            progress = ThrottledProgress(
+                status_msg,
+                action_title="Скоростное скачивание",
+                buttons=cancel_btn,
+                cancel_event=cancel_event
+            )
+            await status_msg.edit(f"📥 **Скачивание...**\nРазмер: {format_bytes(file_size)}", buttons=cancel_btn)
+
+            downloaded_file = await fast_download_file(
+                client=client,
+                message=message,
+                out_path=download_path,
+                file_size=file_size,
+                progress_callback=progress.callback,
+                cancel_event=cancel_event
+            )
+
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
+
+            if not downloaded_file or not Path(downloaded_file).exists():
+                await status_msg.edit("❌ Ошибка при скачивании файла из Telegram.", buttons=None)
+                return
+
+            download_path = Path(downloaded_file)
+
+            # 2. Extract Audio (cancel button removed since download is complete)
+            await status_msg.edit("🎵 **Извлечение звуковой дорожки...**\nОптимизация под Whisper (16 kHz mono WAV)", buttons=None)
+            extract_success, err_msg = await async_extract_audio(download_path, audio_wav_path)
+
+            if not extract_success:
+                await status_msg.edit(f"❌ {err_msg}", buttons=None)
+                return
+
+            # 3. Transcribe
+            device_icon = "🚀 GPU" if transcriber.device == "cuda" else "💻 CPU"
+            await status_msg.edit(
+                f"🎙️ **Распознавание речи...**\n"
+                f"Модель: `{config.WHISPER_MODEL}` | Ускоритель: `{device_icon}`"
+            )
+
+            result = await transcriber.transcribe(audio_wav_path)
+
+            text = result["text"]
+            timestamped_text = result["timestamped_text"]
+            srt_content = result["srt"]
+            lang_code = result["language"]
+            lang_name = LANGUAGE_NAMES.get(lang_code, lang_code.upper())
+            prob = int(result["language_probability"] * 100)
+            duration_str = format_duration(result["audio_duration"])
+            proc_time = result["processing_time"]
+
+            if not text:
+                await status_msg.edit("⚠️ В файле не обнаружена понятная речь.")
+                return
+
+            # 4. Save results to temporary files
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(f"--- Транскрибация: {base_name} ---\n")
+                f.write(f"Длительность: {duration_str}\n")
+                f.write(f"Язык: {lang_name} ({prob}%)\n\n")
+                f.write("=== Текст с таймкодами ===\n")
+                f.write(timestamped_text + "\n\n")
+                f.write("=== Обычный текст ===\n")
+                f.write(text + "\n")
+
+            with open(srt_path, "w", encoding="utf-8") as f:
+                f.write(srt_content)
+
+            # Generate formatted DOCX report
+            create_docx_report(
+                base_name=base_name,
+                duration_str=duration_str,
+                lang_name=lang_name,
+                prob=prob,
+                proc_time=proc_time,
+                text=text,
+                timestamped_text=timestamped_text,
+                output_path=docx_path
+            )
+
+            # 5. Format message
+            header = (
+                f"🎬 **Распознавание завершено!**\n\n"
+                f"⏱️ **Длительность:** `{duration_str}`\n"
+                f"🌐 **Язык:** `{lang_name}` ({prob}%)\n"
+                f"⚡ **Время обработки:** `{proc_time:.1f} сек`\n\n"
+            )
+
+            if len(text) <= 3200:
+                message_body = f"{header}📝 **Текст:**\n{text}"
+            else:
+                snippet = text[:1500]
+                message_body = (
+                    f"{header}"
+                    f"📝 **Текст (фрагмент):**\n{snippet}...\n\n"
+                    f"📎 _Полный текст, субтитры и документ Word прикреплены ниже._"
+                )
+
+            try:
+                await status_msg.edit(message_body)
+            except Exception:
+                # Fallback to plain text if speech transcription contains broken markdown characters
+                try:
+                    plain_header = (
+                        f"🎬 Распознавание завершено!\n\n"
+                        f"⏱️ Длительность: {duration_str}\n"
+                        f"🌐 Язык: {lang_name} ({prob}%)\n"
+                        f"⚡ Время обработки: {proc_time:.1f} сек\n\n"
+                    )
+                    snippet = text if len(text) <= 3200 else text[:1500] + "..."
+                    await status_msg.edit(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None)
+                except Exception:
+                    pass
+
+            # 6. Send files
+            await client.send_file(
+                event.chat_id,
+                file=str(txt_path),
+                caption=f"📄 Текст транскрибации ({base_name})"
+            )
+            await client.send_file(
+                event.chat_id,
+                file=str(srt_path),
+                caption=f"🎬 Субтитры SRT ({base_name})"
+            )
+            if docx_path.exists():
+                await client.send_file(
+                    event.chat_id,
+                    file=str(docx_path),
+                    caption=f"📝 Документ Word ({base_name})"
+                )
+
+        except asyncio.CancelledError:
+            try:
+                await status_msg.edit("🚫 **Скачивание отменено пользователем.**", buttons=None)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[Handler Error]: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                await status_msg.edit(f"❌ Произошла ошибка при обработке: `{str(e)}`", buttons=None)
+            except Exception:
+                pass
+        finally:
+            active_tasks.pop(task_id, None)
+            safe_remove(download_path)
+            safe_remove(audio_wav_path)
+            safe_remove(txt_path)
+            safe_remove(srt_path)
+            safe_remove(docx_path)
+    finally:
+        task_queue.release()
+
+
+def main():
+    print("🚀 Подготовка Whisper модели...", flush=True)
+    transcriber.ensure_model_loaded()
+    print("🚀 Подключение к Telegram (режим 2 ГБ / Telethon)...", flush=True)
+    client.start(bot_token=config.BOT_TOKEN)
+    me = client.loop.run_until_complete(client.get_me())
+    print(f"✅ Бот @{me.username} успешно запущен и ожидает файлы до 2 ГБ в Telegram!", flush=True)
+    client.run_until_disconnected()
+
+
+if __name__ == "__main__":
+    main()
