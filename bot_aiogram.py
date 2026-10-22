@@ -22,7 +22,7 @@ import config
 from audio_utils import format_duration, format_bytes, async_extract_audio, safe_remove, sanitize_filename, create_docx_report
 from transcriber import transcriber
 from video_uniquifier import async_uniquify_video
-from ai_assistant import generate_ai_summary
+from post_formatter import generate_telegram_post
 
 class IPv4AiohttpSession(AiohttpSession):
     """Ensures IPv4 connection to avoid Windows IPv6 semaphore timeout issues."""
@@ -168,6 +168,9 @@ def get_mode_keyboard():
             [
                 KeyboardButton(text="🎙️ Видео в Текст"),
                 KeyboardButton(text="✨ Уникализировать видео")
+            ],
+            [
+                KeyboardButton(text="✍️ Написать ТГ-пост")
             ]
         ],
         resize_keyboard=True
@@ -188,16 +191,18 @@ async def start_handler(message: Message):
 
     user_modes[message.from_user.id] = "transcribe"
     welcome_text = (
-        "👋 **Привет! Я бот для работы с видео и аудио.**\n\n"
+        "👋 **Привет! Я многофункциональный бот для контента.**\n\n"
         "⚡ **Выберите нужный режим кнопками ниже:**\n\n"
         "1️⃣ **🎙️ Видео в Текст:**\n"
         "• Распознавание речи из видео, кружочков, аудио и голосовых\n"
-        "• Создание субтитров `.srt`, текста с таймкодами и документа Word `.docx`\n"
-        "• 🧠 **AI-Саммари и Пост:** генерация тезисов, готового поста и хэштегов нейросетью\n\n"
+        "• Создание субтитров `.srt`, текста с таймкодами и документа Word `.docx`\n\n"
         "2️⃣ **✨ Уникализировать видео:**\n"
         "• Подготовка видео для **Instagram Reels, TikTok и Shorts**\n"
         "• Уникализация **без потери качества** (микро-зум, перцептивный шум, цветовой сдвиг, смена аудиохэша, очистка метаданных)\n"
-        "• Позволяет обойти фильтры повторного контента и теневой бан"
+        "• Позволяет обойти фильтры повторного контента и теневой бан\n\n"
+        "3️⃣ **✍️ Написать ТГ-пост:**\n"
+        "• Превращение любых ваших мыслей, черновиков, заметок или расшифровок в профессионально оформленный пост для Telegram\n"
+        "• Цепляющий заголовок, четкая структура с акцентами, цитаты и хэштеги"
     )
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_mode_keyboard())
 
@@ -228,6 +233,19 @@ async def mode_uniqueize_handler(message: Message):
     )
 
 
+@dp.message(F.text == "✍️ Написать ТГ-пост")
+async def mode_post_handler(message: Message):
+    if not check_access(message.from_user.id):
+        return
+    user_modes[message.from_user.id] = "post"
+    await message.answer(
+        "✍️ **Включен режим: Оформление ТГ-постов**\n\n"
+        "Пришлите мне любой черновик, мысли, статью или расшифровку — я красиво оформлю их в готовый, стильный пост для Telegram с цепляющим заголовком, структурой, цитатами и хэштегами!",
+        parse_mode="Markdown",
+        reply_markup=get_mode_keyboard()
+    )
+
+
 @dp.message(Command("help"))
 async def help_handler(message: Message):
     if not check_access(message.from_user.id):
@@ -236,116 +254,104 @@ async def help_handler(message: Message):
 
     help_text = (
         "📖 **Инструкция по использованию:**\n\n"
-        "1. Отправьте видео, кружочек, аудиофайл или голосовое сообщение.\n"
-        "2. Бот извлечёт аудиодорожку и распознает речь с помощью нейросети Whisper.\n"
-        "3. После завершения бот пришлёт:\n"
-        "   — Текст сообщения прямо в чат\n"
-        "   — Текстовый файл `.txt` с полным текстом и таймкодами\n"
-        "   — Файл субтитров `.srt` и форматированный документ Word `.docx`\n"
-        "4. Кнопка `🧠 Создать AI-Саммари и Пост` (или команда `/summary`) создаст краткую выжимку, готовый пост и хэштеги нейросетью!\n\n"
+        "1️⃣ **🎙️ Режим «Видео в Текст»:**\n"
+        "Отправьте видео, кружочек, аудиофайл или голосовое. Бот расшифрует речь, пришлет текст, субтитры `.srt` и документ Word `.docx`.\n\n"
+        "2️⃣ **✨ Режим «Уникализировать видео»:**\n"
+        "Отправьте видеоролик. Бот применит микро-зум, перцептивный шум и очистит метаданные для безопасной публикации в Reels, TikTok и Shorts.\n\n"
+        "3️⃣ **✍️ Режим «Написать ТГ-пост»:**\n"
+        "Отправьте черновик, мысли или расшифровку. Бот оформит их в красивый готовый Telegram-пост с заголовком, буллетами, цитатами и хэштегами.\n\n"
         f"⚙️ **Текущая конфигурация:**\n"
-        f"• Модель Whisper: `{config.WHISPER_MODEL}`\n"
-        f"• Устройство обработки: `{transcriber.device.upper()}`\n"
-        f"• Точность (compute_type): `{transcriber.compute_type}`\n"
+        f"• Режим: `Bot API (до 20 МБ)`\n"
+        f"• Whisper: `{config.WHISPER_MODEL}` | Ускоритель: `{transcriber.device.upper()}`\n"
+        f"• AI-редактор: `{config.NVIDIA_MODEL}`\n"
     )
     await message.answer(help_text, parse_mode="Markdown")
 
 
-transcription_cache = {}  # prefix_id -> {"text": str, "base_name": str}
-
-
-@dp.callback_query(F.data.startswith("aisum_"))
-async def ai_summary_callback_handler(callback: CallbackQuery):
-    prefix_id = callback.data.removeprefix("aisum_")
-    data = transcription_cache.get(prefix_id)
-    if not data or not data.get("text"):
-        await callback.answer("⚠️ Текст для анализа не найден (возможно, бот был перезапущен).", show_alert=True)
-        return
-
-    text = data["text"]
-    base_name = data.get("base_name", "Аудиозапись")
-
-    await callback.answer("🧠 Запускаю анализ нейросетью...")
-    progress_msg = await callback.message.reply(
-        "🧠 **Генерация AI-Саммари и готового поста...**\n"
-        f"Модель: `{config.NVIDIA_MODEL}` ⚡\n"
-        "Выделяю главные мысли, оформляю пост и подбираю хэштеги...",
-        parse_mode="Markdown"
-    )
-
-    success, ai_result = await generate_ai_summary(text)
-    if not success:
-        await progress_msg.edit_text(f"❌ {ai_result}")
-        return
-
-    full_response = (
-        f"✨ **Умный анализ контента ({config.NVIDIA_MODEL}):**\n"
-        f"📁 Файл: `{base_name}`\n\n"
-        f"{ai_result}"
-    )
-
-    if len(full_response) <= 4000:
-        try:
-            await progress_msg.edit_text(full_response, parse_mode="Markdown")
-        except Exception:
-            await progress_msg.edit_text(full_response, parse_mode=None)
-    else:
-        part1 = full_response[:3800]
-        part2 = full_response[3800:]
-        try:
-            await progress_msg.edit_text(part1, parse_mode="Markdown")
-            await callback.message.reply(part2, parse_mode="Markdown")
-        except Exception:
-            await progress_msg.edit_text(part1, parse_mode=None)
-            await callback.message.reply(part2, parse_mode=None)
-
-
-@dp.message(Command("summary"))
-@dp.message(Command("ai"))
-async def ai_summary_cmd_handler(message: Message):
+@dp.message(Command("post"))
+async def post_cmd_handler(message: Message):
     if not check_access(message.from_user.id):
         return
 
-    input_text = ""
+    raw_text = ""
     args = message.text.split(maxsplit=1)
     if len(args) > 1 and args[1].strip():
-        input_text = args[1].strip()
+        raw_text = args[1].strip()
     elif message.reply_to_message and (message.reply_to_message.text or message.reply_to_message.caption):
-        input_text = message.reply_to_message.text or message.reply_to_message.caption
+        raw_text = message.reply_to_message.text or message.reply_to_message.caption
 
-    if not input_text:
+    if not raw_text:
         await message.reply(
-            "💡 **Как использовать AI-анализ:**\n\n"
-            "1. Ответьте командой `/summary` на любое сообщение с текстом или транскрибацией.\n"
-            "2. Либо отправьте: `/summary <ваш текст>`\n\n"
-            "Нейросеть выделит главные мысли, напишет готовый пост и подберет хэштеги!",
-            parse_mode="Markdown"
+            "✍️ **Как оформить ТГ-пост:**\n\n"
+            "• Либо переключитесь кнопкой в режим **✍️ Написать ТГ-пост** и пришлите текст сообщением.\n"
+            "• Либо отправьте: `/post <ваш черновик>`\n"
+            "• Либо ответьте командой `/post` на любое сообщение с текстом.",
+            parse_mode="Markdown",
+            reply_markup=get_mode_keyboard()
         )
         return
 
+    await process_and_send_post(message, raw_text)
+
+
+@dp.message(F.text & ~F.text.startswith('/'))
+async def text_handler(message: Message):
+    if not check_access(message.from_user.id):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост"]:
+        return
+
+    current_mode = user_modes.get(message.from_user.id, "transcribe")
+    if current_mode == "post":
+        await process_and_send_post(message, text)
+    elif current_mode == "uniqueize":
+        await message.answer(
+            "⚠️ **Включен режим: Уникализация видео.**\n\n"
+            "Пожалуйста, пришлите видеофайл или кружочек.\n"
+            "Чтобы красиво оформить текст в пост, переключитесь кнопкой на **✍️ Написать ТГ-пост**.",
+            parse_mode="Markdown",
+            reply_markup=get_mode_keyboard()
+        )
+    else:
+        await message.answer(
+            "🎙️ **Включен режим: Видео в Текст.**\n\n"
+            "Пришлите видео, кружочек или аудиофайл для расшифровки речи.\n"
+            "Чтобы красиво оформить текст в пост, переключитесь кнопкой на **✍️ Написать ТГ-пост**.",
+            parse_mode="Markdown",
+            reply_markup=get_mode_keyboard()
+        )
+
+
+async def process_and_send_post(message: Message, raw_text: str):
     progress_msg = await message.reply(
-        "🧠 **Генерация AI-Саммари и готового поста...**\n"
+        "✍️ **Оформляю красивый пост для Telegram...**\n"
         f"Модель: `{config.NVIDIA_MODEL}` ⚡",
         parse_mode="Markdown"
     )
-
-    success, ai_result = await generate_ai_summary(input_text)
+    success, html_post, err = await generate_telegram_post(raw_text)
     if not success:
-        await progress_msg.edit_text(f"❌ {ai_result}")
+        await progress_msg.edit_text(f"❌ {err or 'Не удалось оформить пост.'}")
         return
 
-    full_response = f"✨ **AI-Саммари и готовый пост:**\n\n{ai_result}"
-    if len(full_response) <= 4000:
+    if len(html_post) <= 4000:
         try:
-            await progress_msg.edit_text(full_response, parse_mode="Markdown")
+            await progress_msg.edit_text(html_post, parse_mode="HTML")
         except Exception:
-            await progress_msg.edit_text(full_response, parse_mode=None)
+            try:
+                await progress_msg.edit_text(html_post, parse_mode=None)
+            except Exception:
+                pass
     else:
-        part1 = full_response[:3800]
-        part2 = full_response[3800:]
+        part1 = html_post[:3800]
+        part2 = html_post[3800:]
         try:
-            await progress_msg.edit_text(part1, parse_mode="Markdown")
-            await message.reply(part2, parse_mode="Markdown")
+            await progress_msg.edit_text(part1, parse_mode="HTML")
+            await message.reply(part2, parse_mode="HTML")
         except Exception:
             await progress_msg.edit_text(part1, parse_mode=None)
             await message.reply(part2, parse_mode=None)
@@ -536,16 +542,8 @@ async def media_handler(message: Message, bot: Bot):
                     f"📎 _Полный текст, субтитры и документ Word прикреплены ниже._"
                 )
 
-            # Cache text for AI features
-            transcription_cache[unique_prefix] = {"text": text, "base_name": base_name}
-            ai_kb = None
-            if config.NVIDIA_API_KEY:
-                ai_kb = InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="🧠 Создать AI-Саммари и Пост", callback_data=f"aisum_{unique_prefix}")]]
-                )
-
             try:
-                await status_msg.edit_text(message_body, parse_mode="Markdown", reply_markup=ai_kb)
+                await status_msg.edit_text(message_body, parse_mode="Markdown")
             except Exception:
                 # Fallback to plain text if speech transcription contains broken markdown characters
                 try:
@@ -556,7 +554,7 @@ async def media_handler(message: Message, bot: Bot):
                         f"⚡ Время обработки: {proc_time:.1f} сек\n\n"
                     )
                     snippet = text if len(text) <= 3200 else text[:1500] + "..."
-                    await status_msg.edit_text(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None, reply_markup=ai_kb)
+                    await status_msg.edit_text(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None)
                 except Exception:
                     pass
 

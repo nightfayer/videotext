@@ -25,7 +25,7 @@ from audio_utils import format_duration, format_bytes, async_extract_audio, safe
 from fast_download import fast_download_file
 from transcriber import transcriber
 from video_uniquifier import async_uniquify_video
-from ai_assistant import generate_ai_summary
+from post_formatter import generate_telegram_post
 
 # Использование MemorySession исключает блокировки файлов SQLite (database is locked) в Docker
 client = TelegramClient(
@@ -209,6 +209,9 @@ def get_mode_keyboard():
         [
             Button.text("🎙️ Видео в Текст", resize=True),
             Button.text("✨ Уникализировать видео", resize=True)
+        ],
+        [
+            Button.text("✍️ Написать ТГ-пост", resize=True)
         ]
     ]
 
@@ -227,16 +230,18 @@ async def start_handler(event):
 
     user_modes[event.sender_id] = "transcribe"
     welcome_text = (
-        "👋 **Привет! Я бот для работы с видео и аудио.**\n\n"
+        "👋 **Привет! Я многофункциональный бот для контента.**\n\n"
         "⚡ **Выберите нужный режим кнопками ниже:**\n\n"
         "1️⃣ **🎙️ Видео в Текст:**\n"
         "• Распознавание речи из видео, кружочков, аудио и голосовых\n"
-        "• Создание субтитров `.srt`, текста с таймкодами и документа Word `.docx`\n"
-        "• 🧠 **AI-Саммари и Пост:** генерация тезисов, готового поста и хэштегов нейросетью\n\n"
+        "• Создание субтитров `.srt`, текста с таймкодами и документа Word `.docx`\n\n"
         "2️⃣ **✨ Уникализировать видео:**\n"
         "• Подготовка видео для **Instagram Reels, TikTok и Shorts**\n"
         "• Уникализация **без потери качества** (микро-зум, перцептивный шум, цветовой сдвиг, смена аудиохэша, очистка метаданных)\n"
         "• Позволяет обойти фильтры повторного контента и теневой бан\n\n"
+        "3️⃣ **✍️ Написать ТГ-пост:**\n"
+        "• Превращение любых ваших мыслей, черновиков, заметок или расшифровок в профессионально оформленный пост для Telegram\n"
+        "• Цепляющий заголовок, четкая структура с акцентами, цитаты и хэштеги\n\n"
         "📦 Поддержка файлов до **2 ГБ**!"
     )
     await event.respond(welcome_text, buttons=get_mode_keyboard())
@@ -266,6 +271,18 @@ async def mode_uniqueize_handler(event):
     )
 
 
+@client.on(events.NewMessage(incoming=True, pattern=r'^✍️ Написать ТГ-пост$'))
+async def mode_post_handler(event):
+    if not check_access(event.sender_id):
+        return
+    user_modes[event.sender_id] = "post"
+    await event.respond(
+        "✍️ **Включен режим: Оформление ТГ-постов**\n\n"
+        "Пришлите мне любой черновик, мысли, статью или расшифровку — я красиво оформлю их в готовый, стильный пост для Telegram с цепляющим заголовком, структурой, цитатами и хэштегами!",
+        buttons=get_mode_keyboard()
+    )
+
+
 @client.on(events.NewMessage(incoming=True, pattern=r'^/help$'))
 async def help_handler(event):
     if not check_access(event.sender_id):
@@ -274,18 +291,16 @@ async def help_handler(event):
 
     help_text = (
         "📖 **Инструкция по использованию:**\n\n"
-        "1. Отправьте файл видео (как видео или как документ без сжатия).\n"
-        "2. Бот скачает файл, извлечёт аудиодорожку и распознает речь с помощью нейросети Whisper.\n"
-        "3. После завершения бот пришлёт:\n"
-        "   — Текст сообщения прямо в чат\n"
-        "   — Текстовый файл `.txt` с полным текстом и таймкодами\n"
-        "   — Файл субтитров `.srt` и форматированный документ Word `.docx`\n"
-        "4. Кнопка `🧠 Создать AI-Саммари и Пост` (или команда `/summary`) создаст краткую выжимку, готовый пост и хэштеги нейросетью!\n\n"
+        "1️⃣ **🎙️ Режим «Видео в Текст»:**\n"
+        "Отправьте видео, кружочек, аудиофайл или голосовое. Бот расшифрует речь, пришлет текст, субтитры `.srt` и документ Word `.docx`.\n\n"
+        "2️⃣ **✨ Режим «Уникализировать видео»:**\n"
+        "Отправьте видеоролик. Бот применит микро-зум, перцептивный шум и очистит метаданные для безопасной публикации в Reels, TikTok и Shorts.\n\n"
+        "3️⃣ **✍️ Режим «Написать ТГ-пост»:**\n"
+        "Отправьте черновик, мысли или расшифровку. Бот оформит их в красивый готовый Telegram-пост с заголовком, буллетами, цитатами и хэштегами.\n\n"
         f"⚙️ **Текущая конфигурация:**\n"
         f"• Режим: `Telethon (до 2 ГБ)`\n"
-        f"• Модель Whisper: `{config.WHISPER_MODEL}`\n"
-        f"• Устройство обработки: `{transcriber.device.upper()}`\n"
-        f"• Точность (compute_type): `{transcriber.compute_type}`\n"
+        f"• Whisper: `{config.WHISPER_MODEL}` | Ускоритель: `{transcriber.device.upper()}`\n"
+        f"• AI-редактор: `{config.NVIDIA_MODEL}`\n"
     )
     await event.respond(help_text)
 
@@ -341,100 +356,87 @@ async def cancel_callback_handler(event):
         pass
 
 
-transcription_cache = {}  # task_id -> {"text": str, "base_name": str}
-
-
-@client.on(events.CallbackQuery(pattern=r'^aisum_(.+)'))
-async def ai_summary_callback_handler(event):
-    data_str = event.data.decode("utf-8")
-    task_id = data_str.removeprefix("aisum_")
-
-    data = transcription_cache.get(task_id)
-    if not data or not data.get("text"):
-        await event.answer("⚠️ Текст для анализа не найден (возможно, бот был перезапущен).", alert=True)
-        return
-
-    text = data["text"]
-    base_name = data.get("base_name", "Аудиозапись")
-
-    await event.answer("🧠 Запускаю анализ нейросетью...", alert=False)
-    progress_msg = await event.respond(
-        "🧠 **Генерация AI-Саммари и готового поста...**\n"
-        f"Модель: `{config.NVIDIA_MODEL}` ⚡\n"
-        "Выделяю главные мысли, оформляю пост и подбираю хэштеги..."
-    )
-
-    success, ai_result = await generate_ai_summary(text)
-    if not success:
-        await progress_msg.edit(f"❌ {ai_result}")
-        return
-
-    full_response = (
-        f"✨ **Умный анализ контента ({config.NVIDIA_MODEL}):**\n"
-        f"📁 Файл: `{base_name}`\n\n"
-        f"{ai_result}"
-    )
-
-    if len(full_response) <= 4000:
-        try:
-            await progress_msg.edit(full_response)
-        except Exception:
-            await progress_msg.edit(full_response, parse_mode=None)
-    else:
-        part1 = full_response[:3800]
-        part2 = full_response[3800:]
-        try:
-            await progress_msg.edit(part1)
-            await event.respond(part2)
-        except Exception:
-            await progress_msg.edit(part1, parse_mode=None)
-            await event.respond(part2, parse_mode=None)
-
-
-@client.on(events.NewMessage(incoming=True, pattern=r'^/(summary|ai)(\s+.*)?$'))
-async def ai_summary_cmd_handler(event):
+@client.on(events.NewMessage(incoming=True, pattern=r'^/post(\s+.*)?$'))
+async def post_cmd_handler(event):
     if not check_access(event.sender_id):
         return
 
-    input_text = ""
-    if event.pattern_match.group(2) and event.pattern_match.group(2).strip():
-        input_text = event.pattern_match.group(2).strip()
+    raw_text = ""
+    if event.pattern_match.group(1) and event.pattern_match.group(1).strip():
+        raw_text = event.pattern_match.group(1).strip()
     elif event.is_reply:
         reply_msg = await event.get_reply_message()
         if reply_msg and reply_msg.text:
-            input_text = reply_msg.text
+            raw_text = reply_msg.text
 
-    if not input_text:
+    if not raw_text:
         await event.respond(
-            "💡 **Как использовать AI-анализ:**\n\n"
-            "1. Ответьте командой `/summary` на любое сообщение с текстом или транскрибацией.\n"
-            "2. Либо отправьте: `/summary <ваш текст>`\n\n"
-            "Нейросеть выделит главные мысли, напишет готовый пост и подберет хэштеги!"
+            "✍️ **Как оформить ТГ-пост:**\n\n"
+            "• Либо переключитесь кнопкой в режим **✍️ Написать ТГ-пост** и пришлите текст сообщением.\n"
+            "• Либо отправьте: `/post <ваш черновик>`\n"
+            "• Либо ответьте командой `/post` на любое сообщение с текстом.",
+            buttons=get_mode_keyboard()
         )
         return
 
-    progress_msg = await event.respond(
-        "🧠 **Генерация AI-Саммари и готового поста...**\n"
-        f"Модель: `{config.NVIDIA_MODEL}` ⚡"
-    )
+    await process_and_send_post(event, raw_text)
 
-    success, ai_result = await generate_ai_summary(input_text)
-    if not success:
-        await progress_msg.edit(f"❌ {ai_result}")
+
+@client.on(events.NewMessage(incoming=True, func=lambda e: not is_media_message(e) and not (e.text or "").startswith('/')))
+async def text_handler(event):
+    if not check_access(event.sender_id):
         return
 
-    full_response = f"✨ **AI-Саммари и готовый пост:**\n\n{ai_result}"
-    if len(full_response) <= 4000:
-        try:
-            await progress_msg.edit(full_response)
-        except Exception:
-            await progress_msg.edit(full_response, parse_mode=None)
+    text = (event.text or "").strip()
+    if not text:
+        return
+
+    if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост"]:
+        return
+
+    current_mode = user_modes.get(event.sender_id, "transcribe")
+    if current_mode == "post":
+        await process_and_send_post(event, text)
+    elif current_mode == "uniqueize":
+        await event.respond(
+            "⚠️ **Включен режим: Уникализация видео.**\n\n"
+            "Пожалуйста, пришлите видеофайл или кружочек.\n"
+            "Чтобы красиво оформить текст в пост, переключитесь кнопкой на **✍️ Написать ТГ-пост**.",
+            buttons=get_mode_keyboard()
+        )
     else:
-        part1 = full_response[:3800]
-        part2 = full_response[3800:]
+        await event.respond(
+            "🎙️ **Включен режим: Видео в Текст.**\n\n"
+            "Пришлите видео, кружочек или аудиофайл для расшифровки речи.\n"
+            "Чтобы красиво оформить текст в пост, переключитесь кнопкой на **✍️ Написать ТГ-пост**.",
+            buttons=get_mode_keyboard()
+        )
+
+
+async def process_and_send_post(event, raw_text: str):
+    progress_msg = await event.respond(
+        "✍️ **Оформляю красивый пост для Telegram...**\n"
+        f"Модель: `{config.NVIDIA_MODEL}` ⚡"
+    )
+    success, html_post, err = await generate_telegram_post(raw_text)
+    if not success:
+        await progress_msg.edit(f"❌ {err or 'Не удалось оформить пост.'}")
+        return
+
+    if len(html_post) <= 4000:
         try:
-            await progress_msg.edit(part1)
-            await event.respond(part2)
+            await progress_msg.edit(html_post, parse_mode="html")
+        except Exception:
+            try:
+                await progress_msg.edit(html_post, parse_mode=None)
+            except Exception:
+                pass
+    else:
+        part1 = html_post[:3800]
+        part2 = html_post[3800:]
+        try:
+            await progress_msg.edit(part1, parse_mode="html")
+            await event.respond(part2, parse_mode="html")
         except Exception:
             await progress_msg.edit(part1, parse_mode=None)
             await event.respond(part2, parse_mode=None)
@@ -644,14 +646,8 @@ async def media_handler(event):
                     f"📎 _Полный текст, субтитры и документ Word прикреплены ниже._"
                 )
 
-            # Cache text for AI features
-            transcription_cache[task_id] = {"text": text, "base_name": base_name}
-            ai_button = None
-            if config.NVIDIA_API_KEY:
-                ai_button = [[Button.inline("🧠 Создать AI-Саммари и Пост", data=f"aisum_{task_id}")]]
-
             try:
-                await status_msg.edit(message_body, buttons=ai_button)
+                await status_msg.edit(message_body)
             except Exception:
                 # Fallback to plain text if speech transcription contains broken markdown characters
                 try:
@@ -662,7 +658,7 @@ async def media_handler(event):
                         f"⚡ Время обработки: {proc_time:.1f} сек\n\n"
                     )
                     snippet = text if len(text) <= 3200 else text[:1500] + "..."
-                    await status_msg.edit(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None, buttons=ai_button)
+                    await status_msg.edit(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None)
                 except Exception:
                     pass
 
