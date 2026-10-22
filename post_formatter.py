@@ -1,5 +1,5 @@
 """
-post_formatter.py - High-quality Telegram post generator and formatter inspired by neumeha_bot.
+post_formatter.py - High-quality Telegram post generator and rich HTML formatter.
 """
 
 import re
@@ -12,10 +12,10 @@ import config
 
 logger = logging.getLogger(__name__)
 
-POST_SYSTEM_PROMPT = """Ты — топовый Telegram-редактор и автор вирусных каналов (в эстетичном, легком и живом стиле популярных каналов вроде @bytovukhaa и @neumeha).
+POST_SYSTEM_PROMPT = """Ты — топовый Telegram-редактор и автор популярных каналов.
 Твоя задача — взять сырой текст, черновик, мысли, обзор или расшифровку от пользователя и превратить их в идеальный, красивый, атмосферный и легкий для чтения пост для Telegram.
 
-ПРАВИЛА И СТИЛЬ ОФОРМЛЕНИЯ (@bytovukhaa aesthetic):
+ПРАВИЛА И СТИЛЬ ОФОРМЛЕНИЯ:
 1. СРАЗУ К СУТИ БЕЗ ВОДЫ:
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать любые вступления и сервисные фразы: «Конечно!», «Вот ваш пост:», «Привет! С радостью помогу...».
    - Выдавай ТОЛЬКО сам готовый текст поста, готовый к публикации!
@@ -147,7 +147,7 @@ def sanitize_telegram_html(text: str) -> str:
 
 def md_to_telegram_html(text: str) -> str:
     """
-    Converts Markdown to clean Telegram HTML (adapted from neumeha_bot).
+    Converts Markdown to clean, robust Telegram HTML.
     """
     if not text:
         return ""
