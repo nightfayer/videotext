@@ -201,7 +201,8 @@ class ThrottledUniquifyProgress:
 
 
 active_tasks = {}
-user_modes = {}  # sender_id -> 'transcribe' | 'uniqueize'
+user_modes = {}  # sender_id -> 'transcribe' | 'uniqueize' | 'post'
+user_flip = {}   # sender_id -> bool (horizontal flip mirroring)
 
 
 def get_mode_keyboard():
@@ -265,9 +266,38 @@ async def mode_uniqueize_handler(event):
     if not check_access(event.sender_id):
         return
     user_modes[event.sender_id] = "uniqueize"
+    flip_status = "ВКЛЮЧЕНО ✅" if user_flip.get(event.sender_id, False) else "ВЫКЛЮЧЕНО ❌"
     await event.respond(
         "✨ **Включен режим: Уникализация видео**\n\n"
-        "Отправьте мне видео или кружочек — я уникализирую его без потери качества (микро-зум, микро-сдвиг цветов, перцептивный шум, замена аудиохэша и очистка метаданных) для безопасного размещения в **Instagram Reels, TikTok и Shorts**!",
+        "Отправьте мне видео или кружочек — я уникализирую его без потери качества для **Instagram Reels, TikTok и Shorts**.\n\n"
+        "🛡️ **Комплекс анти-детект защиты:**\n"
+        "• 📱 Спуфинг мобильных камер (Apple iPhone 16 Pro, Samsung S24 Ultra, Pixel 8)\n"
+        "• ✂️ Микро-срезка первых 0.15 сек (ломает совпадение первого ключевого кадра)\n"
+        "• 🔍 Микро-зум и перцептивный шум на каждом кадре\n"
+        "• 🖼️ Мягкая виньетка и цветокоррекция\n"
+        "• 🎵 Микро-эквалайзер звука и акустический сдвиг Sound ID\n"
+        "• ⚡ Аппаратное ускорение NVIDIA NVENC / CPU\n\n"
+        f"🪞 **Зеркальное отражение (Flip):** `{flip_status}`\n"
+        "💡 _Отправьте команду /flip для включения или выключения зеркала._",
+        buttons=get_mode_keyboard()
+    )
+
+
+@client.on(events.NewMessage(incoming=True, pattern=r'^/flip$'))
+async def flip_toggle_handler(event):
+    if not check_access(event.sender_id):
+        return
+    current = user_flip.get(event.sender_id, False)
+    new_val = not current
+    user_flip[event.sender_id] = new_val
+    state_str = "ВКЛЮЧЕНО ✅" if new_val else "ВЫКЛЮЧЕНО ❌"
+    tip = (
+        "Видео будет отражено по горизонтали (зеркальный эффект для максимального обхода алгоритмов соцсетей)."
+        if new_val
+        else "Видео будет обработано в стандартной ориентации (без зеркального отражения)."
+    )
+    await event.respond(
+        f"🪞 **Зеркальное отражение видео:** `{state_str}`\n\n{tip}",
         buttons=get_mode_keyboard()
     )
 
@@ -539,16 +569,19 @@ async def media_handler(event):
                     buttons=cancel_btn,
                     cancel_event=cancel_event
                 )
+                is_flip = user_flip.get(message.sender_id, False)
+                flip_txt = " + зеркальное отражение" if is_flip else ""
                 await status_msg.edit(
-                    "✨ **Уникализация видео...**\n"
-                    "Применение микро-зума, перцептивного шума, цветокоррекции и очистки метаданных...",
+                    f"✨ **Уникализация видео{flip_txt}...**\n"
+                    "Применение микро-зума, перцептивного шума, виньетки, микро-срезки I-frame и спуфинга метаданных...",
                     buttons=cancel_btn
                 )
-                success, err_msg = await async_uniquify_video(
+                success, err_msg, meta_info = await async_uniquify_video(
                     download_path,
                     unique_video_path,
                     progress_callback=uniq_progress.callback,
-                    cancel_event=cancel_event
+                    cancel_event=cancel_event,
+                    flip_horizontal=is_flip
                 )
                 if not success:
                     await status_msg.edit(f"❌ {err_msg}", buttons=None)
@@ -556,12 +589,21 @@ async def media_handler(event):
 
                 orig_size = format_bytes(download_path.stat().st_size)
                 new_size = format_bytes(unique_video_path.stat().st_size)
+                device_str = meta_info.get("device", "Apple iPhone")
+                encoder_str = meta_info.get("encoder", "FFmpeg")
+                trim_sec = meta_info.get("trim", 0.0)
+                trim_str = f"{trim_sec}с (новый I-frame)" if trim_sec > 0 else "Без срезки"
+                flip_str = "ВКЛЮЧЕНО ✅" if meta_info.get("flip") else "ВЫКЛЮЧЕНО"
 
                 await status_msg.edit(
                     f"🎬 **Видео успешно уникализировано!**\n\n"
-                    f"📐 **Качество:** Исходное (CRF 18 visually lossless)\n"
-                    f"📦 **Размер:** `{new_size}` (исходный: `{orig_size}`)\n"
-                    f"🛡️ **Изменения:** Микро-зум 1.5%, перцептивный шум, сдвиг аудиохэша, очистка метаданных.\n"
+                    f"📐 **Качество:** Студийное (CRF 18 visually lossless)\n"
+                    f"⚡ **Движок:** `{encoder_str}`\n"
+                    f"📱 **Профиль устройства:** `{device_str}`\n"
+                    f"✂️ **Срезка начала:** `{trim_str}`\n"
+                    f"🔍 **Зум / Скорость:** `{meta_info.get('zoom', '+2%')}` / `{meta_info.get('speed', '+1%')}`\n"
+                    f"🪞 **Зеркало:** `{flip_str}`\n"
+                    f"📦 **Размер:** `{new_size}` (исходный: `{orig_size}`)\n\n"
                     f"🚀 Видео готово к публикации в **Instagram Reels, TikTok и Shorts**!",
                     buttons=None
                 )
@@ -718,6 +760,7 @@ def main():
         commands = [
             types.BotCommand(command="start", description="🚀 Главное меню / Перезапуск"),
             types.BotCommand(command="post", description="✍️ Оформить красивый ТГ-пост"),
+            types.BotCommand(command="flip", description="🪞 Переключить зеркальное отражение"),
             types.BotCommand(command="help", description="📖 Инструкция и возможности"),
             types.BotCommand(command="settings", description="⚙️ Настройки и статус"),
         ]

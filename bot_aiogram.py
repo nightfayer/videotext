@@ -123,7 +123,8 @@ def get_file_info(message: Message):
     return None, None, None, None
 
 
-user_modes = {}  # user_id -> 'transcribe' | 'uniqueize'
+user_modes = {}  # user_id -> 'transcribe' | 'uniqueize' | 'post'
+user_flip = {}   # user_id -> bool (horizontal flip mirroring)
 
 
 class ThrottledUniquifyProgress:
@@ -227,9 +228,39 @@ async def mode_uniqueize_handler(message: Message):
     if not check_access(message.from_user.id):
         return
     user_modes[message.from_user.id] = "uniqueize"
+    flip_status = "ВКЛЮЧЕНО ✅" if user_flip.get(message.from_user.id, False) else "ВЫКЛЮЧЕНО ❌"
     await message.answer(
         "✨ **Включен режим: Уникализация видео**\n\n"
-        "Отправьте мне видео или кружочек — я уникализирую его без потери качества (микро-зум, микро-сдвиг цветов, перцептивный шум, замена аудиохэша и очистка метаданных) для безопасного размещения в **Instagram Reels, TikTok и Shorts**!",
+        "Отправьте мне видео или кружочек — я уникализирую его без потери качества для **Instagram Reels, TikTok и Shorts**.\n\n"
+        "🛡️ **Комплекс анти-детект защиты:**\n"
+        "• 📱 Спуфинг мобильных камер (Apple iPhone 16 Pro, Samsung S24 Ultra, Pixel 8)\n"
+        "• ✂️ Микро-срезка первых 0.15 сек (ломает совпадение первого ключевого кадра)\n"
+        "• 🔍 Микро-зум и перцептивный шум на каждом кадре\n"
+        "• 🖼️ Мягкая виньетка и цветокоррекция\n"
+        "• 🎵 Микро-эквалайзер звука и акустический сдвиг Sound ID\n"
+        "• ⚡ Аппаратное ускорение NVIDIA NVENC / CPU\n\n"
+        f"🪞 **Зеркальное отражение (Flip):** `{flip_status}`\n"
+        "💡 _Отправьте команду /flip для включения или выключения зеркала._",
+        parse_mode="Markdown",
+        reply_markup=get_mode_keyboard()
+    )
+
+
+@dp.message(Command("flip"))
+async def flip_toggle_handler(message: Message):
+    if not check_access(message.from_user.id):
+        return
+    current = user_flip.get(message.from_user.id, False)
+    new_val = not current
+    user_flip[message.from_user.id] = new_val
+    state_str = "ВКЛЮЧЕНО ✅" if new_val else "ВЫКЛЮЧЕНО ❌"
+    tip = (
+        "Видео будет отражено по горизонтали (зеркальный эффект для максимального обхода алгоритмов соцсетей)."
+        if new_val
+        else "Видео будет обработано в стандартной ориентации (без зеркального отражения)."
+    )
+    await message.answer(
+        f"🪞 **Зеркальное отражение видео:** `{state_str}`\n\n{tip}",
         parse_mode="Markdown",
         reply_markup=get_mode_keyboard()
     )
@@ -439,15 +470,18 @@ async def media_handler(message: Message, bot: Bot):
                     status_msg,
                     action_title="Уникализация видео"
                 )
+                is_flip = user_flip.get(message.from_user.id, False)
+                flip_txt = " + зеркальное отражение" if is_flip else ""
                 await status_msg.edit_text(
-                    "✨ **Уникализация видео...**\n"
-                    "Применение микро-зума, перцептивного шума, цветокоррекции и очистки метаданных...",
+                    f"✨ **Уникализация видео{flip_txt}...**\n"
+                    "Применение микро-зума, перцептивного шума, виньетки, микро-срезки I-frame и спуфинга метаданных...",
                     parse_mode="Markdown"
                 )
-                success, err_msg = await async_uniquify_video(
+                success, err_msg, meta_info = await async_uniquify_video(
                     download_path,
                     unique_video_path,
-                    progress_callback=uniq_progress.callback
+                    progress_callback=uniq_progress.callback,
+                    flip_horizontal=is_flip
                 )
                 if not success:
                     await status_msg.edit_text(f"❌ {err_msg}")
@@ -455,12 +489,21 @@ async def media_handler(message: Message, bot: Bot):
 
                 orig_size = format_bytes(download_path.stat().st_size)
                 new_size = format_bytes(unique_video_path.stat().st_size)
+                device_str = meta_info.get("device", "Apple iPhone")
+                encoder_str = meta_info.get("encoder", "FFmpeg")
+                trim_sec = meta_info.get("trim", 0.0)
+                trim_str = f"{trim_sec}с (новый I-frame)" if trim_sec > 0 else "Без срезки"
+                flip_str = "ВКЛЮЧЕНО ✅" if meta_info.get("flip") else "ВЫКЛЮЧЕНО"
 
                 await status_msg.edit_text(
                     f"🎬 **Видео успешно уникализировано!**\n\n"
-                    f"📐 **Качество:** Исходное (CRF 18 visually lossless)\n"
-                    f"📦 **Размер:** `{new_size}` (исходный: `{orig_size}`)\n"
-                    f"🛡️ **Изменения:** Микро-зум 1.5%, перцептивный шум, сдвиг аудиохэша, очистка метаданных.\n"
+                    f"📐 **Качество:** Студийное (CRF 18 visually lossless)\n"
+                    f"⚡ **Движок:** `{encoder_str}`\n"
+                    f"📱 **Профиль устройства:** `{device_str}`\n"
+                    f"✂️ **Срезка начала:** `{trim_str}`\n"
+                    f"🔍 **Зум / Скорость:** `{meta_info.get('zoom', '+2%')}` / `{meta_info.get('speed', '+1%')}`\n"
+                    f"🪞 **Зеркало:** `{flip_str}`\n"
+                    f"📦 **Размер:** `{new_size}` (было: `{orig_size}`)\n\n"
                     f"🚀 Видео готово к публикации в **Instagram Reels, TikTok и Shorts**!",
                     parse_mode="Markdown"
                 )
@@ -606,6 +649,7 @@ async def run_aiogram_bot():
         commands = [
             BotCommand(command="start", description="🚀 Главное меню / Перезапуск"),
             BotCommand(command="post", description="✍️ Оформить красивый ТГ-пост"),
+            BotCommand(command="flip", description="🪞 Переключить зеркальное отражение"),
             BotCommand(command="help", description="📖 Инструкция и возможности"),
             BotCommand(command="settings", description="⚙️ Настройки и статус"),
         ]
