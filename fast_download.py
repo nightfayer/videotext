@@ -1,5 +1,4 @@
 import asyncio
-import os
 import math
 from pathlib import Path
 from telethon import TelegramClient
@@ -55,7 +54,9 @@ async def fast_download_file(
     queue = asyncio.Queue()
     for i in range(num_chunks):
         offset = i * CHUNK_SIZE
-        limit = min(CHUNK_SIZE, total_size - offset)
+        # In Telegram MTProto, limit MUST be a multiple of 1024. Using fixed CHUNK_SIZE
+        # prevents 'LIMIT_INVALID' errors on the last non-aligned chunk.
+        limit = CHUNK_SIZE
         queue.put_nowait((offset, limit))
 
     downloaded_bytes = 0
@@ -78,6 +79,10 @@ async def fast_download_file(
                 )
                 check_cancel()
                 chunk_bytes = result.bytes if hasattr(result, "bytes") else bytes(result)
+
+                # Ensure chunk does not exceed total file size
+                if total_size and (offset + len(chunk_bytes) > total_size):
+                    chunk_bytes = chunk_bytes[:total_size - offset]
 
                 with open(out_path, "r+b") as f:
                     f.seek(offset)

@@ -131,30 +131,18 @@ def get_ffmpeg_executable(auto_install: bool = True) -> str:
     if _FFMPEG_PATH and is_ffmpeg_functional(_FFMPEG_PATH):
         return _FFMPEG_PATH
 
-    # 1. Приоритет: Системный FFmpeg
-    # В Docker-контейнере это обычно /usr/bin/ffmpeg
-    for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]:
-        if os.path.exists(p) and is_ffmpeg_functional(p):
-            print(f"[Debug] Found system FFmpeg at {p}", flush=True)
-            _FFMPEG_PATH = p
-            return _FFMPEG_PATH
-        else:
-            print(f"[Debug] FFmpeg not found or invalid at {p}", flush=True)
-
+    # 1. Приоритет: Системный FFmpeg (в PATH или стандартных путях Linux/Docker)
     found = shutil.which("ffmpeg")
     if found and is_ffmpeg_functional(found):
-        print(f"[Debug] Found FFmpeg in PATH at {found}", flush=True)
         _FFMPEG_PATH = found
         return _FFMPEG_PATH
 
-    print("[Debug] System FFmpeg not found, falling back to imageio_ffmpeg", flush=True)
+    for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]:
+        if os.path.exists(p) and is_ffmpeg_functional(p):
+            _FFMPEG_PATH = p
+            return _FFMPEG_PATH
 
-    # 2. Common Windows locations
-    if sys.platform == "win32":
-        # ... поиск winget ...
-        pass
-
-    # 3. imageio_ffmpeg (Last Resort: Bundled)
+    # 2. Встроенный бинарник imageio_ffmpeg
     try:
         import imageio_ffmpeg
         exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -164,7 +152,7 @@ def get_ffmpeg_executable(auto_install: bool = True) -> str:
     except (ImportError, Exception):
         pass
 
-    # 4. If still not found, run automatic installation
+    # 3. Автоматическая установка через системный менеджер пакетов
     if auto_install:
         installed = install_ffmpeg()
         if installed:

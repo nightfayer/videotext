@@ -1,9 +1,8 @@
 import asyncio
-import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 if sys.platform == "win32":
     try:

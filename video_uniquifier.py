@@ -1,10 +1,8 @@
 import asyncio
 import datetime
-import os
 import random
 import re
 import subprocess
-import sys
 from pathlib import Path
 from audio_utils import get_ffmpeg_executable
 
@@ -244,36 +242,18 @@ def build_uniquify_command(
     return cmd, effective_duration, meta_info
 
 
-def check_needs_normalization(input_file: Path) -> bool:
-    """Checks if the video codec is likely to cause FFmpeg issues."""
-    ffmpeg_bin = get_ffmpeg_executable()
-    try:
-        res = subprocess.run(
-            [ffmpeg_bin, "-i", str(input_file)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=5
-        )
-        output = res.stderr.decode("utf-8", errors="ignore").lower()
-        # HEVC (h265), ProRes, 10-bit color are common hang causes
-        problematic = ["hevc", "prores", "10bit", "heic"]
-        return any(p in output for p in problematic)
-    except Exception:
-        return True # Default to normalization if check fails
-
-
 def normalize_video(input_file: Path) -> Path:
     """Converts a potentially problematic video to a standard h264/yuv420p file with low RAM usage."""
     output_file = input_file.parent / f"{input_file.stem}_norm.mp4"
     ffmpeg_bin = get_ffmpeg_executable()
-    print(f"[FFmpeg] Normalizing {input_file.name} to standard H.264 (low-RAM mode)...", flush=True)
-    
+    print(f"[FFmpeg] Normalizing {input_file.name} to standard H.264 (emergency fallback)...", flush=True)
+
     cmd = [
         ffmpeg_bin,
         "-y",
         "-threads", "2",
         "-i", str(input_file),
-        "-vf", "scale=ceil(min(1080\,iw)/2)*2:-2",
+        "-vf", "scale='if(gte(iw,ih),min(1920,iw),min(1080,iw))':'if(gte(iw,ih),min(1080,ih),min(1920,ih))':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-pix_fmt", "yuv420p",
@@ -281,7 +261,7 @@ def normalize_video(input_file: Path) -> Path:
         "-b:a", "128k",
         str(output_file)
     ]
-    
+
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
         if res.returncode != 0:
@@ -293,58 +273,23 @@ def normalize_video(input_file: Path) -> Path:
             return output_file
     except Exception as e:
         print(f"[FFmpeg Normalization Exception]: {e}", flush=True)
-    
+
     return input_file
 
 
-async def async_uniquify_video(
-    input_file: Path,
-    output_file: Path,
+async def _execute_ffmpeg_proc(
+    cmd: list[str],
+    total_duration: float,
     progress_callback=None,
-    cancel_event: asyncio.Event = None,
-    flip_horizontal: bool = False
-) -> tuple[bool, str, dict]:
-    """
-    Asynchronously runs video uniquification with real-time progress callbacks and cancellation support.
-    Returns (success, error_message, metadata_dict).
-    """
-    if not input_file.exists():
-        return False, "Входной файл не найден на сервере.", {}
-    if input_file.stat().st_size == 0:
-        return False, "Входной файл пуст (0 байт).", {}
-
-    # NEW: Normalization step
-    working_file = input_file
-    normalized = False
-    try:
-        if check_needs_normalization(input_file):
-            working_file = normalize_video(input_file)
-            normalized = True
-    except Exception as e:
-        print(f"[Normalization Error]: {e}", flush=True)
-
-    cmd, total_duration, meta_info = build_uniquify_command(
-        working_file,
-        output_file,
-        flip_horizontal=flip_horizontal
+    cancel_event: asyncio.Event = None
+) -> tuple[int, str]:
+    """Runs FFmpeg subprocess, tracks progress, and returns (returncode, stderr)."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
     )
-
-    # Запускаем FFmpeg с логированием вывода в stdout
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        print(f"[FFmpeg] Command started: {' '.join(cmd[:10])}...", flush=True)
-    except Exception as e:
-        if normalized and working_file != input_file and working_file.exists():
-            try:
-                working_file.unlink()
-            except Exception:
-                pass
-        return False, f"Не удалось запустить FFmpeg: {e}", {}
-
+    print(f"[FFmpeg] Command started: {' '.join(cmd[:10])}...", flush=True)
 
     speed_str = ""
     try:
@@ -376,20 +321,67 @@ async def async_uniquify_video(
                             pass
 
         await proc.wait()
-        
-        # CLEANUP: remove normalized file if created
-        if normalized and working_file != input_file and working_file.exists():
-            try:
-                working_file.unlink()
-            except Exception:
-                pass
+        stderr_bytes = await proc.stderr.read()
+        err_msg = stderr_bytes.decode("utf-8", errors="ignore").strip()
+        return proc.returncode, err_msg
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise
+
+
+async def async_uniquify_video(
+    input_file: Path,
+    output_file: Path,
+    progress_callback=None,
+    cancel_event: asyncio.Event = None,
+    flip_horizontal: bool = False
+) -> tuple[bool, str, dict]:
+    """
+    Asynchronously runs video uniquification with real-time progress callbacks and cancellation support.
+    Uses 1-pass fast processing with automatic fallback to normalization if an exotic codec fails.
+    Returns (success, error_message, metadata_dict).
+    """
+    if not input_file.exists():
+        return False, "Входной файл не найден на сервере.", {}
+    if input_file.stat().st_size == 0:
+        return False, "Входной файл пуст (0 байт).", {}
+
+    cmd, total_duration, meta_info = build_uniquify_command(
+        input_file,
+        output_file,
+        flip_horizontal=flip_horizontal
+    )
+
+    try:
+        retcode, err_msg = await _execute_ffmpeg_proc(
+            cmd, total_duration, progress_callback=progress_callback, cancel_event=cancel_event
+        )
+
+        # If direct pass failed, try normalization fallback
+        if retcode != 0:
+            print(f"[Uniquifier] Прямая обработка завершилась ошибкой ({err_msg[:120]}). Запуск аварийной нормализации...", flush=True)
+            norm_file = normalize_video(input_file)
+            if norm_file != input_file and norm_file.exists():
+                try:
+                    cmd_norm, norm_dur, meta_info = build_uniquify_command(
+                        norm_file, output_file, flip_horizontal=flip_horizontal
+                    )
+                    retcode, err_msg = await _execute_ffmpeg_proc(
+                        cmd_norm, norm_dur, progress_callback=progress_callback, cancel_event=cancel_event
+                    )
+                finally:
+                    try:
+                        norm_file.unlink()
+                    except Exception:
+                        pass
 
         if cancel_event and cancel_event.is_set():
             raise asyncio.CancelledError()
 
-        if proc.returncode != 0:
-            stderr_bytes = await proc.stderr.read()
-            err_msg = stderr_bytes.decode("utf-8", errors="ignore").strip()
+        if retcode != 0:
             print(f"[Uniquifier FFmpeg Error]: {err_msg}", flush=True)
             return False, f"Ошибка FFmpeg при обработке: {err_msg[:150]}", {}
 
@@ -399,17 +391,13 @@ async def async_uniquify_video(
         # Final 100% callback
         if progress_callback and total_duration > 0:
             try:
-                await progress_callback(total_duration, total_duration, speed_str)
+                await progress_callback(total_duration, total_duration, "")
             except Exception:
                 pass
 
         return True, "", meta_info
 
     except asyncio.CancelledError:
-        try:
-            proc.kill()
-        except Exception:
-            pass
         raise
     except Exception as e:
         return False, f"Ошибка при уникализации видео: {str(e)}", {}

@@ -1,5 +1,4 @@
 import asyncio
-import os
 import sys
 import time
 from pathlib import Path
@@ -12,10 +11,9 @@ if sys.platform == "win32":
         pass
 
 import socket
-import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BotCommand
+from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from aiogram.client.session.aiohttp import AiohttpSession
 
 import config
