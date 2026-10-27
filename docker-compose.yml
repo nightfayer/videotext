@@ -1,6 +1,7 @@
 services:
   videotext-bot:
     build: .
+    pull_policy: build
     container_name: videotext-bot
     restart: always
     env_file:
