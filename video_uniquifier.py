@@ -170,10 +170,11 @@ def build_uniquify_command(
     use_nvenc = is_nvenc_available()
     encoder_name = "NVIDIA NVENC (GPU ⚡)" if use_nvenc else "libx264 (CPU 💻)"
 
+    threads_val = "0" if use_nvenc else "2"
     cmd = [
         ffmpeg_bin,
         "-y",
-        "-threads", "0",
+        "-threads", threads_val,
         "-i", str(input_file),
         "-vf", vf_str,
     ]
@@ -259,26 +260,38 @@ def check_needs_normalization(input_file: Path) -> bool:
 
 
 def normalize_video(input_file: Path) -> Path:
-    """Converts a potentially problematic video to a standard h264/yuv420p file."""
+    """Converts a potentially problematic video to a standard h264/yuv420p file with low RAM usage."""
     output_file = input_file.parent / f"{input_file.stem}_norm.mp4"
     ffmpeg_bin = get_ffmpeg_executable()
-    print(f"[FFmpeg] Normalizing {input_file.name} to standard H.264...", flush=True)
+    print(f"[FFmpeg] Normalizing {input_file.name} to standard H.264 (low-RAM mode)...", flush=True)
     
     cmd = [
         ffmpeg_bin,
         "-y",
+        "-threads", "2",
         "-i", str(input_file),
+        "-vf", "scale=ceil(min(1080\,iw)/2)*2:-2",
         "-c:v", "libx264",
-        "-profile:v", "baseline",
-        "-level", "3.0",
+        "-preset", "ultrafast",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "128k",
         str(output_file)
     ]
     
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-    return output_file
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        if res.returncode != 0:
+            err = res.stderr.decode("utf-8", errors="ignore").strip()
+            print(f"[FFmpeg Normalization Warning]: {err[:200]}", flush=True)
+            return input_file
+        if output_file.exists() and output_file.stat().st_size > 0:
+            print(f"[FFmpeg] Normalization complete: {output_file.name}", flush=True)
+            return output_file
+    except Exception as e:
+        print(f"[FFmpeg Normalization Exception]: {e}", flush=True)
+    
+    return input_file
 
 
 async def async_uniquify_video(
@@ -322,8 +335,11 @@ async def async_uniquify_video(
         )
         print(f"[FFmpeg] Command started: {' '.join(cmd[:10])}...", flush=True)
     except Exception as e:
-        if normalized:
-            working_file.unlink()
+        if normalized and working_file != input_file and working_file.exists():
+            try:
+                working_file.unlink()
+            except Exception:
+                pass
         return False, f"Не удалось запустить FFmpeg: {e}", {}
 
 
@@ -359,8 +375,11 @@ async def async_uniquify_video(
         await proc.wait()
         
         # CLEANUP: remove normalized file if created
-        if normalized:
-            working_file.unlink()
+        if normalized and working_file != input_file and working_file.exists():
+            try:
+                working_file.unlink()
+            except Exception:
+                pass
 
         if cancel_event and cancel_event.is_set():
             raise asyncio.CancelledError()
