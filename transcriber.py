@@ -32,11 +32,40 @@ class WhisperTranscriber:
         self.model_name = config.WHISPER_MODEL
         self.device = config.DEVICE
         self.compute_type = config.COMPUTE_TYPE
+        self.last_used_time = 0.0
 
     def ensure_model_loaded(self):
         if self.model is not None:
             return
         self._load_model()
+
+    def unload_model(self):
+        """Unloads Whisper model from memory to free RAM when idle."""
+        if self.model is not None:
+            print(f"[Whisper] 💤 Модель '{self.model_name}' выгружена из памяти из-за простоя (освобождено ~1.2 ГБ RAM)", flush=True)
+            self.model = None
+            import gc
+            gc.collect()
+            if self.device == "cuda":
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+    async def monitor_idle(self, idle_timeout: int = 600, check_interval: int = 60):
+        """Monitors model inactivity and unloads it after idle_timeout seconds (default 10 min)."""
+        while True:
+            try:
+                await asyncio.sleep(check_interval)
+                if self.model is not None and self.last_used_time > 0:
+                    if time.time() - self.last_used_time >= idle_timeout:
+                        self.unload_model()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[Whisper Idle Monitor Error]: {e}", flush=True)
 
     def _load_model(self):
         print(f"[Whisper] Загрузка модели '{self.model_name}' на {self.device} ({self.compute_type})...")
@@ -63,6 +92,7 @@ class WhisperTranscriber:
 
     def _sync_transcribe(self, audio_path: Path, language: str = None) -> Dict[str, Any]:
         self.ensure_model_loaded()
+        self.last_used_time = time.time()
         start_time = time.time()
         target_lang = language or config.WHISPER_LANGUAGE or None
 

@@ -269,6 +269,43 @@ def clean_temp_dir(temp_dir: Path):
         print(f"[Temp Cleanup Error]: {e}", flush=True)
 
 
+def cleanup_stale_temp_files(temp_dir: Path, max_age_seconds: int = 3600):
+    """Removes temporary files older than max_age_seconds (default 1 hour)."""
+    now = time.time()
+    cleaned = 0
+    freed_bytes = 0
+    try:
+        if not temp_dir.exists():
+            return
+        for item in temp_dir.iterdir():
+            if item.is_file():
+                try:
+                    mtime = item.stat().st_mtime
+                    if now - mtime > max_age_seconds:
+                        size = item.stat().st_size
+                        item.unlink()
+                        cleaned += 1
+                        freed_bytes += size
+                except Exception:
+                    pass
+        if cleaned > 0:
+            print(f"[Garbage Collector] 🧹 Очищено зависших файлов: {cleaned} (освобождено {format_bytes(freed_bytes)})", flush=True)
+    except Exception as e:
+        print(f"[Garbage Collector Warning]: {e}", flush=True)
+
+
+async def periodic_temp_cleanup(temp_dir: Path, interval_seconds: int = 1800, max_age_seconds: int = 3600):
+    """Periodically cleans up old files every 30 minutes in the background."""
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            cleanup_stale_temp_files(temp_dir, max_age_seconds)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[Cleanup Loop Error]: {e}", flush=True)
+
+
 def create_docx_report(
     base_name: str,
     duration_str: str,

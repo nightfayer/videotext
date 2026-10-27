@@ -21,7 +21,15 @@ from telethon.tl.types import (
 from telethon.sessions import MemorySession
 
 import config
-from audio_utils import format_duration, format_bytes, async_extract_audio, safe_remove, sanitize_filename, create_docx_report
+from audio_utils import (
+    format_duration,
+    format_bytes,
+    async_extract_audio,
+    safe_remove,
+    sanitize_filename,
+    create_docx_report,
+    periodic_temp_cleanup,
+)
 from fast_download import fast_download_file
 from transcriber import transcriber
 from video_uniquifier import async_uniquify_video
@@ -784,6 +792,10 @@ def main():
         print("✅ Меню команд Telegram (/start, /post, /help) успешно установлено!", flush=True)
     except Exception as e:
         print(f"⚠️ Не удалось зарегистрировать меню команд: {e}", flush=True)
+
+    # Фоновые процессы автономности: очистка старых файлов и выгрузка памяти при простое
+    client.loop.create_task(periodic_temp_cleanup(config.TEMP_DIR, interval_seconds=1800, max_age_seconds=3600))
+    client.loop.create_task(transcriber.monitor_idle(idle_timeout=600, check_interval=60))
 
     print(f"✅ Бот @{me.username} успешно запущен и ожидает файлы до 2 ГБ в Telegram!", flush=True)
     client.run_until_disconnected()

@@ -19,7 +19,15 @@ from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardBut
 from aiogram.client.session.aiohttp import AiohttpSession
 
 import config
-from audio_utils import format_duration, format_bytes, async_extract_audio, safe_remove, sanitize_filename, create_docx_report
+from audio_utils import (
+    format_duration,
+    format_bytes,
+    async_extract_audio,
+    safe_remove,
+    sanitize_filename,
+    create_docx_report,
+    periodic_temp_cleanup,
+)
 from transcriber import transcriber
 from video_uniquifier import async_uniquify_video
 from post_formatter import generate_telegram_post
@@ -659,6 +667,10 @@ async def run_aiogram_bot():
         print("✅ Меню команд Telegram (/start, /post, /help) успешно установлено!")
     except Exception as e:
         print(f"⚠️ Не удалось зарегистрировать меню команд: {e}")
+
+    # Фоновые процессы автономности: очистка старых файлов и выгрузка памяти при простое
+    asyncio.create_task(periodic_temp_cleanup(config.TEMP_DIR, interval_seconds=1800, max_age_seconds=3600))
+    asyncio.create_task(transcriber.monitor_idle(idle_timeout=600, check_interval=60))
 
     print(f"✅ Бот @{me.username} успешно запущен в стандартном режиме (aiogram) и ожидает файлы в Telegram!")
     await dp.start_polling(bot)
