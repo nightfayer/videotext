@@ -25,18 +25,10 @@ from video_uniquifier import async_uniquify_video
 from post_formatter import generate_telegram_post
 
 class IPv4AiohttpSession(AiohttpSession):
-    """Ensures IPv4 connection to avoid Windows IPv6 semaphore timeout issues."""
-    async def create_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            connector = aiohttp.TCPConnector(
-                ssl=self._ssl,
-                family=socket.AF_INET,
-            )
-            self._session = aiohttp.ClientSession(
-                connector=connector,
-                json_serialize=self.json_dumps,
-            )
-        return self._session
+    """Ensures IPv4 connection to avoid Windows/Linux IPv6 semaphore timeout issues."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._connector_init["family"] = socket.AF_INET
 
 dp = Dispatcher()
 
