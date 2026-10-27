@@ -461,11 +461,17 @@ async def media_handler(message: Message, bot: Bot):
             user_mode = user_modes.get(message.from_user.id, "transcribe")
 
             if user_mode == "uniqueize":
-                is_video = message.video or message.video_note or (message.document and ((message.document.mime_type or "").startswith("video/") or ext in {".mp4", ".mov", ".mkv", ".avi", ".webm"}))
+                # Добавили проверку расширений для .mov, .heic
+                is_video = message.video or message.video_note or (message.document and (
+                    (message.document.mime_type or "").startswith("video/") or 
+                    (message.document.mime_type or "").startswith("image/heic") or
+                    ext in {".mp4", ".mov", ".mkv", ".avi", ".webm", ".heic"}
+                ))
                 if not is_video:
-                    await status_msg.edit_text("⚠️ В режиме уникализации поддерживаются только видеофайлы и кружочки. Для аудио переключитесь кнопкой на режим 🎙️ Видео в Текст.")
+                    await status_msg.edit_text("⚠️ Файл не распознан как видео. Уникализация поддерживает только .mp4, .mov, .mkv и др.")
                     return
 
+                print(f"[Debug] Starting uniquify for {download_path}", flush=True)
                 uniq_progress = ThrottledUniquifyProgress(
                     status_msg,
                     action_title="Уникализация видео"
@@ -477,12 +483,18 @@ async def media_handler(message: Message, bot: Bot):
                     "Применение микро-зума, перцептивного шума, виньетки, микро-срезки I-frame и спуфинга метаданных...",
                     parse_mode="Markdown"
                 )
+                
+                # Замеряем время
+                start_time = time.time()
                 success, err_msg, meta_info = await async_uniquify_video(
                     download_path,
                     unique_video_path,
                     progress_callback=uniq_progress.callback,
                     flip_horizontal=is_flip
                 )
+                duration = time.time() - start_time
+                print(f"[Debug] Uniquify finished in {duration:.2f}s. Success: {success}", flush=True)
+
                 if not success:
                     await status_msg.edit_text(f"❌ {err_msg}")
                     return

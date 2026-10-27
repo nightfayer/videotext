@@ -527,10 +527,12 @@ async def media_handler(event):
         cancel_btn = [[Button.inline("❌ Отменить", data=f"cancel_{task_id}")]]
 
         try:
-            # 1. High-Speed Download with Cancel button
+            # 1. Загрузка файла (используем скоростной метод с прогрессом для всех файлов)
+            # Внутри fast_download_file заложена логика автоматического перехода 
+            # на стандартный метод (fallback), если скоростной дает ошибку.
             progress = ThrottledProgress(
                 status_msg,
-                action_title="Скоростное скачивание",
+                action_title="Скачивание",
                 buttons=cancel_btn,
                 cancel_event=cancel_event
             )
@@ -548,8 +550,8 @@ async def media_handler(event):
             if cancel_event.is_set():
                 raise asyncio.CancelledError()
 
-            if not downloaded_file or not Path(downloaded_file).exists():
-                await status_msg.edit("❌ Ошибка при скачивании файла из Telegram.", buttons=None)
+            if not download_path.exists():
+                await status_msg.edit("❌ Ошибка при скачивании файла.", buttons=None)
                 return
 
             download_path = Path(downloaded_file)
@@ -558,11 +560,17 @@ async def media_handler(event):
             user_mode = user_modes.get(message.sender_id, "transcribe")
 
             if user_mode == "uniqueize":
-                is_video = message.video or message.video_note or (message.document and ((message.document.mime_type or "").startswith("video/") or ext in {".mp4", ".mov", ".mkv", ".avi", ".webm"}))
+                # Добавили проверку расширений для .mov, .heic
+                is_video = message.video or message.video_note or (message.document and (
+                    (message.document.mime_type or "").startswith("video/") or 
+                    (message.document.mime_type or "").startswith("image/heic") or
+                    ext in {".mp4", ".mov", ".mkv", ".avi", ".webm", ".heic"}
+                ))
                 if not is_video:
-                    await status_msg.edit("⚠️ В режиме уникализации поддерживаются только видеофайлы и кружочки. Для аудио переключитесь кнопкой на режим 🎙️ Видео в Текст.", buttons=None)
+                    await status_msg.edit("⚠️ Файл не распознан как видео. Уникализация поддерживает только .mp4, .mov, .mkv и др.", buttons=None)
                     return
 
+                print(f"[Debug] Starting uniquify for {download_path}", flush=True)
                 uniq_progress = ThrottledUniquifyProgress(
                     status_msg,
                     action_title="Уникализация видео",
@@ -576,6 +584,9 @@ async def media_handler(event):
                     "Применение микро-зума, перцептивного шума, виньетки, микро-срезки I-frame и спуфинга метаданных...",
                     buttons=cancel_btn
                 )
+                
+                # Замеряем время начала
+                start_time = time.time()
                 success, err_msg, meta_info = await async_uniquify_video(
                     download_path,
                     unique_video_path,
@@ -583,6 +594,9 @@ async def media_handler(event):
                     cancel_event=cancel_event,
                     flip_horizontal=is_flip
                 )
+                duration = time.time() - start_time
+                print(f"[Debug] Uniquify finished in {duration:.2f}s. Success: {success}", flush=True)
+
                 if not success:
                     await status_msg.edit(f"❌ {err_msg}", buttons=None)
                     return
