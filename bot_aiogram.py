@@ -644,8 +644,6 @@ async def media_handler(message: Message, bot: Bot):
 async def run_aiogram_bot():
     session = IPv4AiohttpSession()
     bot = Bot(token=config.BOT_TOKEN, session=session)
-    print("🚀 Подготовка Whisper модели...")
-    transcriber.ensure_model_loaded()
     me = await bot.get_me()
 
     # Регистрация меню команд в интерфейсе Telegram

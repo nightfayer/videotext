@@ -763,8 +763,6 @@ async def media_handler(event):
 
 
 def main():
-    print("🚀 Подготовка Whisper модели...", flush=True)
-    transcriber.ensure_model_loaded()
     print("🚀 Подключение к Telegram (режим 2 ГБ / Telethon)...", flush=True)
     client.start(bot_token=config.BOT_TOKEN)
     me = client.loop.run_until_complete(client.get_me())
