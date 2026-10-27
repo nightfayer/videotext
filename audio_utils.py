@@ -125,20 +125,36 @@ def install_ffmpeg() -> str | None:
 
 def get_ffmpeg_executable(auto_install: bool = True) -> str:
     """
-    Finds the ffmpeg executable in PATH, imageio_ffmpeg, or common locations.
-    If not found and auto_install=True, automatically installs it.
+    Finds the ffmpeg executable, prioritizing the system-installed version.
     """
     global _FFMPEG_PATH
     if _FFMPEG_PATH and is_ffmpeg_functional(_FFMPEG_PATH):
         return _FFMPEG_PATH
 
-    # 1. System PATH
+    # 1. Приоритет: Системный FFmpeg
+    # В Docker-контейнере это обычно /usr/bin/ffmpeg
+    for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]:
+        if os.path.exists(p) and is_ffmpeg_functional(p):
+            print(f"[Debug] Found system FFmpeg at {p}", flush=True)
+            _FFMPEG_PATH = p
+            return _FFMPEG_PATH
+        else:
+            print(f"[Debug] FFmpeg not found or invalid at {p}", flush=True)
+
     found = shutil.which("ffmpeg")
     if found and is_ffmpeg_functional(found):
+        print(f"[Debug] Found FFmpeg in PATH at {found}", flush=True)
         _FFMPEG_PATH = found
         return _FFMPEG_PATH
 
-    # 2. imageio_ffmpeg (pip package with bundled ffmpeg binary)
+    print("[Debug] System FFmpeg not found, falling back to imageio_ffmpeg", flush=True)
+
+    # 2. Common Windows locations
+    if sys.platform == "win32":
+        # ... поиск winget ...
+        pass
+
+    # 3. imageio_ffmpeg (Last Resort: Bundled)
     try:
         import imageio_ffmpeg
         exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -147,28 +163,6 @@ def get_ffmpeg_executable(auto_install: bool = True) -> str:
             return _FFMPEG_PATH
     except (ImportError, Exception):
         pass
-
-    # 3. Common Windows locations
-    if sys.platform == "win32":
-        appdata_local = os.environ.get("LOCALAPPDATA", "")
-        if appdata_local:
-            winget_path = Path(appdata_local) / "Microsoft" / "WinGet" / "Packages"
-            if winget_path.exists():
-                for match in winget_path.glob("**/ffmpeg.exe"):
-                    if is_ffmpeg_functional(str(match)):
-                        _FFMPEG_PATH = str(match)
-                        return _FFMPEG_PATH
-
-        candidates = [
-            Path("ffmpeg.exe"),
-            Path("bin/ffmpeg.exe"),
-            Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
-            Path(r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"),
-        ]
-        for c in candidates:
-            if c.exists() and is_ffmpeg_functional(str(c)):
-                _FFMPEG_PATH = str(c)
-                return _FFMPEG_PATH
 
     # 4. If still not found, run automatic installation
     if auto_install:

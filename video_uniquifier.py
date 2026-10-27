@@ -240,6 +240,47 @@ def build_uniquify_command(
     return cmd, effective_duration, meta_info
 
 
+def check_needs_normalization(input_file: Path) -> bool:
+    """Checks if the video codec is likely to cause FFmpeg issues."""
+    ffmpeg_bin = get_ffmpeg_executable()
+    try:
+        res = subprocess.run(
+            [ffmpeg_bin, "-i", str(input_file)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5
+        )
+        output = res.stderr.decode("utf-8", errors="ignore").lower()
+        # HEVC (h265), ProRes, 10-bit color are common hang causes
+        problematic = ["hevc", "prores", "10bit", "heic"]
+        return any(p in output for p in problematic)
+    except Exception:
+        return True # Default to normalization if check fails
+
+
+def normalize_video(input_file: Path) -> Path:
+    """Converts a potentially problematic video to a standard h264/yuv420p file."""
+    output_file = input_file.parent / f"{input_file.stem}_norm.mp4"
+    ffmpeg_bin = get_ffmpeg_executable()
+    print(f"[FFmpeg] Normalizing {input_file.name} to standard H.264...", flush=True)
+    
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-i", str(input_file),
+        "-c:v", "libx264",
+        "-profile:v", "baseline",
+        "-level", "3.0",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        str(output_file)
+    ]
+    
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    return output_file
+
+
 async def async_uniquify_video(
     input_file: Path,
     output_file: Path,
@@ -256,20 +297,35 @@ async def async_uniquify_video(
     if input_file.stat().st_size == 0:
         return False, "Входной файл пуст (0 байт).", {}
 
+    # NEW: Normalization step
+    working_file = input_file
+    normalized = False
+    try:
+        if check_needs_normalization(input_file):
+            working_file = normalize_video(input_file)
+            normalized = True
+    except Exception as e:
+        print(f"[Normalization Error]: {e}", flush=True)
+
     cmd, total_duration, meta_info = build_uniquify_command(
-        input_file,
+        working_file,
         output_file,
         flip_horizontal=flip_horizontal
     )
 
+    # Запускаем FFmpeg с логированием вывода в stdout
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
+        print(f"[FFmpeg] Command started: {' '.join(cmd[:10])}...", flush=True)
     except Exception as e:
+        if normalized:
+            working_file.unlink()
         return False, f"Не удалось запустить FFmpeg: {e}", {}
+
 
     speed_str = ""
     try:
@@ -301,6 +357,10 @@ async def async_uniquify_video(
                             pass
 
         await proc.wait()
+        
+        # CLEANUP: remove normalized file if created
+        if normalized:
+            working_file.unlink()
 
         if cancel_event and cancel_event.is_set():
             raise asyncio.CancelledError()
