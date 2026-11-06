@@ -4,6 +4,7 @@
 env/
 venv/
 temp/
+data/
 __pycache__/
 *.py[cod]
 *.session

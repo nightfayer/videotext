@@ -32,14 +32,18 @@ def main():
     if has_telethon_credentials:
         print("\n" + "=" * 62)
         print("🚀 ЗАПУСК БОТА В РЕЖИМЕ TELETHON (файлы до 2 ГБ)")
+        print(f"👑 Администраторы: {', '.join(map(str, config.ADMIN_IDS))}")
         if config.ALLOWED_USERS:
-            print(f"🔒 Белый список: {', '.join(map(str, config.ALLOWED_USERS))}")
+            print(f"🔒 Белый список ({len(config.ALLOWED_USERS)} пользователей): {', '.join(map(str, config.get_allowed_users_list()))}")
         print("=" * 62)
         import bot_telethon
         bot_telethon.main()
     else:
         print("\n" + "=" * 62)
         print("ℹ️  ЗАПУСК В СТАНДАРТНОМ РЕЖИМЕ (файлы до 20 МБ)")
+        print(f"👑 Администраторы: {', '.join(map(str, config.ADMIN_IDS))}")
+        if config.ALLOWED_USERS:
+            print(f"🔒 Белый список ({len(config.ALLOWED_USERS)} пользователей): {', '.join(map(str, config.get_allowed_users_list()))}")
         print("=" * 62)
         print("💡 Для поддержки больших файлов (до 2 ГБ):")
         print("   1. Получите API_ID и API_HASH на https://my.telegram.org")

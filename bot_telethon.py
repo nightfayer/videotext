@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sys
 import time
 from pathlib import Path
@@ -212,8 +213,8 @@ user_modes = {}  # sender_id -> 'transcribe' | 'uniqueize' | 'post'
 user_flip = {}   # sender_id -> bool (horizontal flip mirroring)
 
 
-def get_mode_keyboard():
-    return [
+def get_mode_keyboard(user_id: int = None):
+    rows = [
         [
             Button.text("🎙️ Видео в Текст", resize=True),
             Button.text("✨ Уникализировать видео", resize=True)
@@ -223,18 +224,62 @@ def get_mode_keyboard():
             Button.text("🚀 Меню / Старт", resize=True)
         ]
     ]
+    if user_id and config.is_admin(user_id):
+        rows.append([
+            Button.text("👑 Управление доступом", resize=True)
+        ])
+    return rows
 
 
 def check_access(sender_id: int) -> bool:
-    if not config.ALLOWED_USERS:
-        return True
-    return sender_id in config.ALLOWED_USERS
+    return config.is_user_allowed(sender_id)
+
+
+def build_admin_panel(admin_id: int):
+    users = config.get_allowed_users_list()
+    lines = []
+    for uid in users:
+        if config.is_admin(uid):
+            label = "👑 Главный админ" if uid == config.DEFAULT_ADMIN_ID else "👑 Админ"
+            if uid == admin_id:
+                label += " (Вы)"
+            lines.append(f"• `{uid}` — **{label}**")
+        else:
+            lines.append(f"• `{uid}`")
+
+    users_text = "\n".join(lines) if lines else "_(Список пуст)_"
+
+    text = (
+        "👑 **Панель управления доступом**\n\n"
+        f"🔒 **Пользователи в белом списке ({len(users)}):**\n"
+        f"{users_text}\n\n"
+        "⚡ **Быстрые команды:**\n"
+        "➕ Добавить: `/adduser <ID>`\n"
+        "➖ Удалить: `/deluser <ID>`\n\n"
+        "💡 _Также можно переслать сообщение пользователя с командой /adduser или нажать кнопки ниже:_"
+    )
+
+    buttons = [
+        [
+            Button.inline("➕ Добавить пользователя", data="adm_add_help"),
+            Button.inline("➖ Удалить пользователя", data="adm_del_menu")
+        ],
+        [
+            Button.inline("🔄 Обновить список", data="adm_refresh")
+        ]
+    ]
+    return text, buttons
 
 
 @client.on(events.NewMessage(incoming=True, pattern=r'^(/start|🚀 Меню / Старт)$'))
 async def start_handler(event):
     if not check_access(event.sender_id):
-        await event.respond("⛔ **Доступ ограничен.**\nВы не авторизованы для использования этого бота.")
+        await event.respond(
+            f"⛔ **Доступ ограничен.**\n\n"
+            f"Вы не авторизованы для использования этого бота.\n\n"
+            f"🆔 Ваш Telegram ID: `{event.sender_id}`\n"
+            f"💡 _Отправьте этот ID администратору для получения доступа._"
+        )
         return
 
     user_modes[event.sender_id] = "transcribe"
@@ -253,7 +298,10 @@ async def start_handler(event):
         "• Цепляющий заголовок, четкая структура с акцентами, цитаты и хэштеги\n\n"
         "📦 Поддержка файлов до **2 ГБ**!"
     )
-    await event.respond(welcome_text, buttons=get_mode_keyboard())
+    if config.is_admin(event.sender_id):
+        welcome_text += "\n\n👑 _Вы авторизованы как Администратор бота (доступна панель управления)._"
+
+    await event.respond(welcome_text, buttons=get_mode_keyboard(event.sender_id))
 
 
 @client.on(events.NewMessage(incoming=True, pattern=r'^🎙️ Видео в Текст$'))
@@ -264,7 +312,7 @@ async def mode_transcribe_handler(event):
     await event.respond(
         "🎙️ **Включен режим: Видео в Текст**\n\n"
         "Отправьте мне видео, кружочек, аудиофайл или голосовое сообщение — я переведу речь в текст, создам файл субтитров .srt и документ Word!",
-        buttons=get_mode_keyboard()
+        buttons=get_mode_keyboard(event.sender_id)
     )
 
 
@@ -286,7 +334,7 @@ async def mode_uniqueize_handler(event):
         "• ⚡ Аппаратное ускорение NVIDIA NVENC / CPU\n\n"
         f"🪞 **Зеркальное отражение (Flip):** `{flip_status}`\n"
         "💡 _Отправьте команду /flip для включения или выключения зеркала._",
-        buttons=get_mode_keyboard()
+        buttons=get_mode_keyboard(event.sender_id)
     )
 
 
@@ -305,7 +353,7 @@ async def flip_toggle_handler(event):
     )
     await event.respond(
         f"🪞 **Зеркальное отражение видео:** `{state_str}`\n\n{tip}",
-        buttons=get_mode_keyboard()
+        buttons=get_mode_keyboard(event.sender_id)
     )
 
 
@@ -317,8 +365,163 @@ async def mode_post_handler(event):
     await event.respond(
         "✍️ **Включен режим: Оформление ТГ-постов**\n\n"
         "Пришлите мне любой черновик, мысли, статью или расшифровку — я красиво оформлю их в готовый, стильный пост для Telegram с цепляющим заголовком, структурой, цитатами и хэштегами!",
-        buttons=get_mode_keyboard()
+        buttons=get_mode_keyboard(event.sender_id)
     )
+
+
+@client.on(events.NewMessage(incoming=True, pattern=r'^(/admin|/users|👑 Управление доступом)$'))
+async def admin_panel_handler(event):
+    if not config.is_admin(event.sender_id):
+        await event.respond("⛔ **Доступ запрещен.** Эта команда доступна только администраторам бота.")
+        return
+    text, buttons = build_admin_panel(event.sender_id)
+    await event.respond(text, buttons=buttons)
+
+
+@client.on(events.NewMessage(incoming=True, pattern=r'^/(adduser|add_user|allow)(\s+.*)?$'))
+async def add_user_handler(event):
+    if not config.is_admin(event.sender_id):
+        await event.respond("⛔ **Доступ запрещен.** Эта команда доступна только администраторам бота.")
+        return
+
+    raw_args = ""
+    if event.pattern_match.group(2):
+        raw_args = event.pattern_match.group(2).strip()
+
+    target_ids = []
+
+    if raw_args:
+        tokens = re.split(r'[\s,]+', raw_args)
+        for t in tokens:
+            if t.isdigit():
+                target_ids.append(int(t))
+    elif event.is_reply:
+        reply_msg = await event.get_reply_message()
+        if reply_msg:
+            if reply_msg.forward and reply_msg.forward.sender_id:
+                target_ids.append(reply_msg.forward.sender_id)
+            elif reply_msg.sender_id:
+                target_ids.append(reply_msg.sender_id)
+
+    if not target_ids:
+        await event.respond(
+            "➕ **Как добавить пользователя:**\n\n"
+            "• Отправьте: `/adduser <Telegram ID>`\n"
+            "  _Пример:_ `/adduser 123456789`\n"
+            "• Или добавьте несколько ID сразу:\n"
+            "  `/adduser 123456789 987654321`\n"
+            "• Либо ответьте командой `/adduser` на пересланное сообщение пользователя.",
+            buttons=get_mode_keyboard(event.sender_id)
+        )
+        return
+
+    results = []
+    for uid in target_ids:
+        ok, msg = config.add_allowed_user(uid)
+        results.append(msg)
+
+    await event.respond("\n".join(results), buttons=get_mode_keyboard(event.sender_id))
+
+
+@client.on(events.NewMessage(incoming=True, pattern=r'^/(deluser|del_user|remove_user|deny)(\s+.*)?$'))
+async def del_user_handler(event):
+    if not config.is_admin(event.sender_id):
+        await event.respond("⛔ **Доступ запрещен.** Эта команда доступна только администраторам бота.")
+        return
+
+    raw_args = ""
+    if event.pattern_match.group(2):
+        raw_args = event.pattern_match.group(2).strip()
+
+    target_ids = []
+
+    if raw_args:
+        tokens = re.split(r'[\s,]+', raw_args)
+        for t in tokens:
+            if t.isdigit():
+                target_ids.append(int(t))
+    elif event.is_reply:
+        reply_msg = await event.get_reply_message()
+        if reply_msg:
+            if reply_msg.forward and reply_msg.forward.sender_id:
+                target_ids.append(reply_msg.forward.sender_id)
+            elif reply_msg.sender_id:
+                target_ids.append(reply_msg.sender_id)
+
+    if not target_ids:
+        await event.respond(
+            "➖ **Как удалить пользователя:**\n\n"
+            "• Отправьте: `/deluser <Telegram ID>`\n"
+            "  _Пример:_ `/deluser 123456789`\n"
+            "• Или нажмите кнопку **👑 Управление доступом** и выберите пользователя для удаления.",
+            buttons=get_mode_keyboard(event.sender_id)
+        )
+        return
+
+    results = []
+    for uid in target_ids:
+        ok, msg = config.remove_allowed_user(uid)
+        results.append(msg)
+
+    await event.respond("\n".join(results), buttons=get_mode_keyboard(event.sender_id))
+
+
+@client.on(events.CallbackQuery(pattern=r'^adm_'))
+async def admin_callback_handler(event):
+    if not config.is_admin(event.sender_id):
+        await event.answer("⛔ Доступ запрещен.", alert=True)
+        return
+
+    data = event.data.decode("utf-8")
+
+    if data == "adm_refresh":
+        text, buttons = build_admin_panel(event.sender_id)
+        try:
+            await event.edit(text, buttons=buttons)
+            await event.answer("🔄 Список пользователей обновлен!")
+        except Exception:
+            await event.answer("Список уже актуален.")
+
+    elif data == "adm_add_help":
+        await event.answer(
+            "Отправьте команду:\n/adduser <Telegram ID>\n\nПример:\n/adduser 123456789",
+            alert=True
+        )
+
+    elif data == "adm_del_menu":
+        non_admins = [u for u in config.get_allowed_users_list() if not config.is_admin(u)]
+        if not non_admins:
+            await event.answer("В белом списке нет пользователей, доступных для удаления.", alert=True)
+            return
+
+        del_buttons = []
+        row = []
+        for uid in non_admins:
+            row.append(Button.inline(f"❌ {uid}", data=f"adm_rm_{uid}"))
+            if len(row) == 2:
+                del_buttons.append(row)
+                row = []
+        if row:
+            del_buttons.append(row)
+
+        del_buttons.append([Button.inline("🔙 Назад в меню", data="adm_refresh")])
+        await event.edit(
+            "🗑️ **Выберите пользователя для удаления из белого списка:**\n\n"
+            "💡 _Нажмите на кнопку с ID нужного пользователя, чтобы мгновенно закрыть ему доступ к боту:_",
+            buttons=del_buttons
+        )
+
+    elif data.startswith("adm_rm_"):
+        uid_str = data.removeprefix("adm_rm_")
+        if uid_str.isdigit():
+            uid = int(uid_str)
+            ok, msg = config.remove_allowed_user(uid)
+            await event.answer(f"Пользователь {uid} удален из белого списка ❌", alert=False)
+            text, buttons = build_admin_panel(event.sender_id)
+            try:
+                await event.edit(text, buttons=buttons)
+            except Exception:
+                pass
 
 
 @client.on(events.NewMessage(incoming=True, pattern=r'^/help$'))
@@ -423,6 +626,11 @@ async def post_cmd_handler(event):
 @client.on(events.NewMessage(incoming=True, func=lambda e: not is_media_message(e) and not (e.text or "").startswith('/')))
 async def text_handler(event):
     if not check_access(event.sender_id):
+        await event.respond(
+            f"⛔ **Доступ ограничен.**\n\n"
+            f"🆔 Ваш Telegram ID: `{event.sender_id}`\n"
+            f"💡 _Отправьте этот ID администратору для получения доступа._"
+        )
         return
 
     text = (event.text or "").strip()
@@ -499,7 +707,11 @@ def get_media_ext(message) -> str:
 @client.on(events.NewMessage(incoming=True, func=is_media_message))
 async def media_handler(event):
     if not check_access(event.sender_id):
-        await event.reply("⛔ **Доступ ограничен.**\nВы не авторизованы для использования этого бота.")
+        await event.reply(
+            f"⛔ **Доступ ограничен.**\n\n"
+            f"🆔 Ваш Telegram ID: `{event.sender_id}`\n"
+            f"💡 _Отправьте этот ID администратору для получения доступа._"
+        )
         return
 
     message = event.message
@@ -780,6 +992,7 @@ def main():
             types.BotCommand(command="start", description="🚀 Главное меню / Перезапуск"),
             types.BotCommand(command="post", description="✍️ Оформить красивый ТГ-пост"),
             types.BotCommand(command="flip", description="🪞 Переключить зеркальное отражение"),
+            types.BotCommand(command="admin", description="👑 Управление доступом (Админ)"),
             types.BotCommand(command="help", description="📖 Инструкция и возможности"),
             types.BotCommand(command="settings", description="⚙️ Настройки и статус"),
         ]

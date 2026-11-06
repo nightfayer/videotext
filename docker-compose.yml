@@ -11,6 +11,8 @@ services:
       - hf_models_cache:/root/.cache/huggingface
       # Временная папка для обработки файлов
       - ./temp:/app/temp
+      # Постоянное хранилище настроек и белого списка пользователей
+      - ./data:/app/data
 
 volumes:
   hf_models_cache:

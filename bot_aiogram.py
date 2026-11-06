@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sys
 import time
 from pathlib import Path
@@ -13,7 +14,16 @@ if sys.platform == "win32":
 import socket
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardButton, BotCommand
+from aiogram.types import (
+    Message,
+    FSInputFile,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+    BotCommand
+)
 from aiogram.client.session.aiohttp import AiohttpSession
 
 import config
@@ -161,33 +171,75 @@ class ThrottledUniquifyProgress:
                 pass
 
 
-def get_mode_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(text="🎙️ Видео в Текст"),
-                KeyboardButton(text="✨ Уникализировать видео")
-            ],
-            [
-                KeyboardButton(text="✍️ Написать ТГ-пост"),
-                KeyboardButton(text="🚀 Меню / Старт")
-            ]
+def get_mode_keyboard(user_id: int = None) -> ReplyKeyboardMarkup:
+    kb = [
+        [
+            KeyboardButton(text="🎙️ Видео в Текст"),
+            KeyboardButton(text="✨ Уникализировать видео")
         ],
-        resize_keyboard=True
-    )
+        [
+            KeyboardButton(text="✍️ Написать ТГ-пост"),
+            KeyboardButton(text="🚀 Меню / Старт")
+        ]
+    ]
+    if user_id and config.is_admin(user_id):
+        kb.append([
+            KeyboardButton(text="👑 Управление доступом")
+        ])
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
 def check_access(user_id: int) -> bool:
-    if not config.ALLOWED_USERS:
-        return True
-    return user_id in config.ALLOWED_USERS
+    return config.is_user_allowed(user_id)
+
+
+def build_admin_panel(admin_id: int):
+    users = config.get_allowed_users_list()
+    lines = []
+    for uid in users:
+        if config.is_admin(uid):
+            label = "👑 Главный админ" if uid == config.DEFAULT_ADMIN_ID else "👑 Админ"
+            if uid == admin_id:
+                label += " (Вы)"
+            lines.append(f"• `{uid}` — **{label}**")
+        else:
+            lines.append(f"• `{uid}`")
+
+    users_text = "\n".join(lines) if lines else "_(Список пуст)_"
+
+    text = (
+        "👑 **Панель управления доступом**\n\n"
+        f"🔒 **Пользователи в белом списке ({len(users)}):**\n"
+        f"{users_text}\n\n"
+        "⚡ **Быстрые команды:**\n"
+        "➕ Добавить: `/adduser <ID>`\n"
+        "➖ Удалить: `/deluser <ID>`\n\n"
+        "💡 _Также можно переслать сообщение пользователя с командой /adduser или нажать кнопки ниже:_"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="➕ Добавить пользователя", callback_data="adm_add_help"),
+            InlineKeyboardButton(text="➖ Удалить пользователя", callback_data="adm_del_menu")
+        ],
+        [
+            InlineKeyboardButton(text="🔄 Обновить список", callback_data="adm_refresh")
+        ]
+    ])
+    return text, kb
 
 
 @dp.message(Command("start"))
 @dp.message(F.text == "🚀 Меню / Старт")
 async def start_handler(message: Message):
     if not check_access(message.from_user.id):
-        await message.answer("⛔ **Доступ ограничен.**\nВы не авторизованы для использования этого бота.", parse_mode="Markdown")
+        await message.answer(
+            f"⛔ **Доступ ограничен.**\n\n"
+            f"Вы не авторизованы для использования этого бота.\n\n"
+            f"🆔 Ваш Telegram ID: `{message.from_user.id}`\n"
+            f"💡 _Отправьте этот ID администратору для получения доступа._",
+            parse_mode="Markdown"
+        )
         return
 
     user_modes[message.from_user.id] = "transcribe"
@@ -205,7 +257,10 @@ async def start_handler(message: Message):
         "• Превращение любых ваших мыслей, черновиков, заметок или расшифровок в профессионально оформленный пост для Telegram\n"
         "• Цепляющий заголовок, четкая структура с акцентами, цитаты и хэштеги"
     )
-    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_mode_keyboard())
+    if config.is_admin(message.from_user.id):
+        welcome_text += "\n\n👑 _Вы авторизованы как Администратор бота (доступна панель управления)._"
+
+    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_mode_keyboard(message.from_user.id))
 
 
 @dp.message(F.text == "🎙️ Видео в Текст")
@@ -217,7 +272,7 @@ async def mode_transcribe_handler(message: Message):
         "🎙️ **Включен режим: Видео в Текст**\n\n"
         "Отправьте мне видео, кружочек, аудиофайл или голосовое сообщение — я переведу речь в текст, создам файл субтитров .srt и документ Word!",
         parse_mode="Markdown",
-        reply_markup=get_mode_keyboard()
+        reply_markup=get_mode_keyboard(message.from_user.id)
     )
 
 
@@ -240,7 +295,7 @@ async def mode_uniqueize_handler(message: Message):
         f"🪞 **Зеркальное отражение (Flip):** `{flip_status}`\n"
         "💡 _Отправьте команду /flip для включения или выключения зеркала._",
         parse_mode="Markdown",
-        reply_markup=get_mode_keyboard()
+        reply_markup=get_mode_keyboard(message.from_user.id)
     )
 
 
@@ -260,7 +315,7 @@ async def flip_toggle_handler(message: Message):
     await message.answer(
         f"🪞 **Зеркальное отражение видео:** `{state_str}`\n\n{tip}",
         parse_mode="Markdown",
-        reply_markup=get_mode_keyboard()
+        reply_markup=get_mode_keyboard(message.from_user.id)
     )
 
 
@@ -273,8 +328,164 @@ async def mode_post_handler(message: Message):
         "✍️ **Включен режим: Оформление ТГ-постов**\n\n"
         "Пришлите мне любой черновик, мысли, статью или расшифровку — я красиво оформлю их в готовый, стильный пост для Telegram с цепляющим заголовком, структурой, цитатами и хэштегами!",
         parse_mode="Markdown",
-        reply_markup=get_mode_keyboard()
+        reply_markup=get_mode_keyboard(message.from_user.id)
     )
+
+
+@dp.message(Command("admin"))
+@dp.message(Command("users"))
+@dp.message(F.text == "👑 Управление доступом")
+async def admin_panel_handler(message: Message):
+    if not config.is_admin(message.from_user.id):
+        await message.answer("⛔ **Доступ запрещен.** Эта команда доступна только администраторам бота.", parse_mode="Markdown")
+        return
+    text, kb = build_admin_panel(message.from_user.id)
+    await message.answer(text, parse_mode="Markdown", reply_markup=kb)
+
+
+@dp.message(Command("adduser", "add_user", "allow"))
+async def add_user_handler(message: Message):
+    if not config.is_admin(message.from_user.id):
+        await message.answer("⛔ **Доступ запрещен.** Эта команда доступна только администраторам бота.", parse_mode="Markdown")
+        return
+
+    text_parts = (message.text or "").split(maxsplit=1)
+    raw_args = text_parts[1].strip() if len(text_parts) > 1 else ""
+
+    target_ids = []
+
+    if raw_args:
+        tokens = re.split(r'[\s,]+', raw_args)
+        for t in tokens:
+            if t.isdigit():
+                target_ids.append(int(t))
+    elif message.reply_to_message:
+        reply = message.reply_to_message
+        if reply.forward_from:
+            target_ids.append(reply.forward_from.id)
+        elif reply.from_user:
+            target_ids.append(reply.from_user.id)
+
+    if not target_ids:
+        await message.answer(
+            "➕ **Как добавить пользователя:**\n\n"
+            "• Отправьте: `/adduser <Telegram ID>`\n"
+            "  _Пример:_ `/adduser 123456789`\n"
+            "• Или добавьте несколько ID сразу:\n"
+            "  `/adduser 123456789 987654321`\n"
+            "• Либо ответьте командой `/adduser` на пересланное сообщение пользователя.",
+            parse_mode="Markdown",
+            reply_markup=get_mode_keyboard(message.from_user.id)
+        )
+        return
+
+    results = []
+    for uid in target_ids:
+        ok, msg = config.add_allowed_user(uid)
+        results.append(msg)
+
+    await message.answer("\n".join(results), parse_mode="Markdown", reply_markup=get_mode_keyboard(message.from_user.id))
+
+
+@dp.message(Command("deluser", "del_user", "remove_user", "deny"))
+async def del_user_handler(message: Message):
+    if not config.is_admin(message.from_user.id):
+        await message.answer("⛔ **Доступ запрещен.** Эта команда доступна только администраторам бота.", parse_mode="Markdown")
+        return
+
+    text_parts = (message.text or "").split(maxsplit=1)
+    raw_args = text_parts[1].strip() if len(text_parts) > 1 else ""
+
+    target_ids = []
+
+    if raw_args:
+        tokens = re.split(r'[\s,]+', raw_args)
+        for t in tokens:
+            if t.isdigit():
+                target_ids.append(int(t))
+    elif message.reply_to_message:
+        reply = message.reply_to_message
+        if reply.forward_from:
+            target_ids.append(reply.forward_from.id)
+        elif reply.from_user:
+            target_ids.append(reply.from_user.id)
+
+    if not target_ids:
+        await message.answer(
+            "➖ **Как удалить пользователя:**\n\n"
+            "• Отправьте: `/deluser <Telegram ID>`\n"
+            "  _Пример:_ `/deluser 123456789`\n"
+            "• Или нажмите кнопку **👑 Управление доступом** и выберите пользователя для удаления.",
+            parse_mode="Markdown",
+            reply_markup=get_mode_keyboard(message.from_user.id)
+        )
+        return
+
+    results = []
+    for uid in target_ids:
+        ok, msg = config.remove_allowed_user(uid)
+        results.append(msg)
+
+    await message.answer("\n".join(results), parse_mode="Markdown", reply_markup=get_mode_keyboard(message.from_user.id))
+
+
+@dp.callback_query(F.data.startswith("adm_"))
+async def admin_callback_handler(callback: CallbackQuery):
+    if not config.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен.", show_alert=True)
+        return
+
+    data = callback.data
+
+    if data == "adm_refresh":
+        text, kb = build_admin_panel(callback.from_user.id)
+        try:
+            await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+            await callback.answer("🔄 Список пользователей обновлен!")
+        except Exception:
+            await callback.answer("Список уже актуален.")
+
+    elif data == "adm_add_help":
+        await callback.answer(
+            "Отправьте команду:\n/adduser <Telegram ID>\n\nПример:\n/adduser 123456789",
+            show_alert=True
+        )
+
+    elif data == "adm_del_menu":
+        non_admins = [u for u in config.get_allowed_users_list() if not config.is_admin(u)]
+        if not non_admins:
+            await callback.answer("В белом списке нет пользователей, доступных для удаления.", show_alert=True)
+            return
+
+        del_buttons = []
+        row = []
+        for uid in non_admins:
+            row.append(InlineKeyboardButton(text=f"❌ {uid}", callback_data=f"adm_rm_{uid}"))
+            if len(row) == 2:
+                del_buttons.append(row)
+                row = []
+        if row:
+            del_buttons.append(row)
+
+        del_buttons.append([InlineKeyboardButton(text="🔙 Назад в меню", callback_data="adm_refresh")])
+        await callback.message.edit_text(
+            "🗑️ **Выберите пользователя для удаления из белого списка:**\n\n"
+            "💡 _Нажмите на кнопку с ID нужного пользователя, чтобы мгновенно закрыть ему доступ к боту:_",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=del_buttons)
+        )
+
+    elif data.startswith("adm_rm_"):
+        uid_str = data.removeprefix("adm_rm_")
+        if uid_str.isdigit():
+            uid = int(uid_str)
+            ok, msg = config.remove_allowed_user(uid)
+            await callback.answer(f"Пользователь {uid} удален из белого списка ❌", show_alert=False)
+            text, kb = build_admin_panel(callback.from_user.id)
+            try:
+                await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+            except Exception:
+                pass
 
 
 @dp.message(Command("help"))
@@ -328,6 +539,12 @@ async def post_cmd_handler(message: Message):
 @dp.message(F.text & ~F.text.startswith('/'))
 async def text_handler(message: Message):
     if not check_access(message.from_user.id):
+        await message.answer(
+            f"⛔ **Доступ ограничен.**\n\n"
+            f"🆔 Ваш Telegram ID: `{message.from_user.id}`\n"
+            f"💡 _Отправьте этот ID администратору для получения доступа._",
+            parse_mode="Markdown"
+        )
         return
 
     text = (message.text or "").strip()
@@ -410,7 +627,12 @@ async def settings_handler(message: Message):
 @dp.message(F.video | F.video_note | F.audio | F.voice | F.document)
 async def media_handler(message: Message, bot: Bot):
     if not check_access(message.from_user.id):
-        await message.reply("⛔ **Доступ ограничен.**\nВы не авторизованы для использования этого бота.", parse_mode="Markdown")
+        await message.reply(
+            f"⛔ **Доступ ограничен.**\n\n"
+            f"🆔 Ваш Telegram ID: `{message.from_user.id}`\n"
+            f"💡 _Отправьте этот ID администратору для получения доступа._",
+            parse_mode="Markdown"
+        )
         return
 
     file_id, file_size, base_name, ext = get_file_info(message)
@@ -658,6 +880,7 @@ async def run_aiogram_bot():
             BotCommand(command="start", description="🚀 Главное меню / Перезапуск"),
             BotCommand(command="post", description="✍️ Оформить красивый ТГ-пост"),
             BotCommand(command="flip", description="🪞 Переключить зеркальное отражение"),
+            BotCommand(command="admin", description="👑 Управление доступом (Админ)"),
             BotCommand(command="help", description="📖 Инструкция и возможности"),
             BotCommand(command="settings", description="⚙️ Настройки и статус"),
         ]

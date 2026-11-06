@@ -20,8 +20,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Копируем код приложения
 COPY . .
 
-# Создаем директорию для временных файлов
-RUN mkdir -p /app/temp && chmod 777 /app/temp
+# Создаем директории для временных файлов и данных
+RUN mkdir -p /app/temp /app/data && chmod 777 /app/temp /app/data
 
 # Запуск бота
 CMD ["python", "bot.py"]
