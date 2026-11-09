@@ -133,6 +133,7 @@ def get_file_info(message: Message):
 
 user_modes = {}  # user_id -> 'transcribe' | 'uniqueize' | 'post'
 user_flip = {}   # user_id -> bool (horizontal flip mirroring)
+recent_transcripts = {}  # msg_id -> full_text (cache up to 50 transcripts for 1-click post generation)
 
 
 class ThrottledUniquifyProgress:
@@ -510,6 +511,25 @@ async def help_handler(message: Message):
     await message.answer(help_text, parse_mode="Markdown")
 
 
+@dp.callback_query(F.data == "makepost")
+async def makepost_callback_handler(callback: CallbackQuery):
+    if not check_access(callback.from_user.id):
+        await callback.answer("⛔ Доступ ограничен.", show_alert=True)
+        return
+
+    raw_text = recent_transcripts.get(callback.message.message_id, "")
+    if not raw_text and callback.message and callback.message.text:
+        m = re.search(r"📝\s*(?:\*\*Текст(?:\s*\(фрагмент\))?:\*\*|Текст:)\s*\n(.+)", callback.message.text, flags=re.DOTALL)
+        raw_text = m.group(1).strip() if m else callback.message.text.strip()
+
+    if not raw_text:
+        await callback.answer("⚠️ Текст для поста не найден.", show_alert=True)
+        return
+
+    await callback.answer("✍️ Генерирую пост из расшифровки...")
+    await process_and_send_post(callback.message, raw_text)
+
+
 @dp.message(Command("post"))
 async def post_cmd_handler(message: Message):
     if not check_access(message.from_user.id):
@@ -519,8 +539,14 @@ async def post_cmd_handler(message: Message):
     args = message.text.split(maxsplit=1)
     if len(args) > 1 and args[1].strip():
         raw_text = args[1].strip()
-    elif message.reply_to_message and (message.reply_to_message.text or message.reply_to_message.caption):
-        raw_text = message.reply_to_message.text or message.reply_to_message.caption
+    elif message.reply_to_message:
+        reply = message.reply_to_message
+        if reply.message_id in recent_transcripts:
+            raw_text = recent_transcripts[reply.message_id]
+        elif reply.text or reply.caption:
+            txt = reply.text or reply.caption
+            m = re.search(r"📝\s*(?:\*\*Текст(?:\s*\(фрагмент\))?:\*\*|Текст:)\s*\n(.+)", txt, flags=re.DOTALL)
+            raw_text = m.group(1).strip() if m else txt.strip()
 
     if not raw_text:
         await message.reply(
@@ -850,8 +876,15 @@ async def media_handler(message: Message, bot: Bot):
                     f"📎 _Полный текст, субтитры и документ Word прикреплены ниже._"
                 )
 
+            if len(recent_transcripts) >= 50:
+                recent_transcripts.pop(next(iter(recent_transcripts)), None)
+            recent_transcripts[status_msg.message_id] = text
+            post_inline_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✍️ Оформить в ТГ-пост", callback_data="makepost")]
+            ])
+
             try:
-                await status_msg.edit_text(message_body, parse_mode="Markdown")
+                await status_msg.edit_text(message_body, parse_mode="Markdown", reply_markup=post_inline_kb)
             except Exception:
                 # Fallback to plain text if speech transcription contains broken markdown characters
                 try:
@@ -862,7 +895,7 @@ async def media_handler(message: Message, bot: Bot):
                         f"⚡ Время обработки: {proc_time:.1f} сек\n\n"
                     )
                     snippet = text if len(text) <= 3200 else text[:1500] + "..."
-                    await status_msg.edit_text(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None)
+                    await status_msg.edit_text(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None, reply_markup=post_inline_kb)
                 except Exception:
                     pass
 

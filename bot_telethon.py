@@ -211,6 +211,7 @@ class ThrottledUniquifyProgress:
 active_tasks = {}
 user_modes = {}  # sender_id -> 'transcribe' | 'uniqueize' | 'post'
 user_flip = {}   # sender_id -> bool (horizontal flip mirroring)
+recent_transcripts = {}  # msg_id -> full_text (cache up to 50 transcripts for 1-click post generation)
 
 
 def get_mode_keyboard(user_id: int = None):
@@ -597,6 +598,27 @@ async def cancel_callback_handler(event):
         pass
 
 
+@client.on(events.CallbackQuery(pattern=r'^makepost$'))
+async def makepost_callback_handler(event):
+    if not check_access(event.sender_id):
+        await event.answer("⛔ Доступ ограничен.", alert=True)
+        return
+
+    raw_text = recent_transcripts.get(event.message_id, "")
+    if not raw_text:
+        msg = await event.get_message()
+        if msg and msg.text:
+            m = re.search(r"📝\s*(?:\*\*Текст(?:\s*\(фрагмент\))?:\*\*|Текст:)\s*\n(.+)", msg.text, flags=re.DOTALL)
+            raw_text = m.group(1).strip() if m else msg.text.strip()
+
+    if not raw_text:
+        await event.answer("⚠️ Текст для поста не найден.", alert=True)
+        return
+
+    await event.answer("✍️ Генерирую пост из расшифровки...")
+    await process_and_send_post(event, raw_text)
+
+
 @client.on(events.NewMessage(incoming=True, pattern=r'(?s)^/post(\s+.*)?$'))
 async def post_cmd_handler(event):
     if not check_access(event.sender_id):
@@ -607,8 +629,12 @@ async def post_cmd_handler(event):
         raw_text = event.pattern_match.group(1).strip()
     elif event.is_reply:
         reply_msg = await event.get_reply_message()
-        if reply_msg and reply_msg.text:
-            raw_text = reply_msg.text
+        if reply_msg:
+            if reply_msg.id in recent_transcripts:
+                raw_text = recent_transcripts[reply_msg.id]
+            elif reply_msg.text:
+                m = re.search(r"📝\s*(?:\*\*Текст(?:\s*\(фрагмент\))?:\*\*|Текст:)\s*\n(.+)", reply_msg.text, flags=re.DOTALL)
+                raw_text = m.group(1).strip() if m else reply_msg.text.strip()
 
     if not raw_text:
         await event.respond(
@@ -952,8 +978,13 @@ async def media_handler(event):
                     f"📎 _Полный текст, субтитры и документ Word прикреплены ниже._"
                 )
 
+            if len(recent_transcripts) >= 50:
+                recent_transcripts.pop(next(iter(recent_transcripts)), None)
+            recent_transcripts[status_msg.id] = text
+            post_inline_btn = [[Button.inline("✍️ Оформить в ТГ-пост", data="makepost")]]
+
             try:
-                await status_msg.edit(message_body)
+                await status_msg.edit(message_body, buttons=post_inline_btn)
             except Exception:
                 # Fallback to plain text if speech transcription contains broken markdown characters
                 try:
@@ -964,7 +995,7 @@ async def media_handler(event):
                         f"⚡ Время обработки: {proc_time:.1f} сек\n\n"
                     )
                     snippet = text if len(text) <= 3200 else text[:1500] + "..."
-                    await status_msg.edit(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None)
+                    await status_msg.edit(f"{plain_header}📝 Текст:\n{snippet}", parse_mode=None, buttons=post_inline_btn)
                 except Exception:
                     pass
 
