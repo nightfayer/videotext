@@ -64,7 +64,9 @@ MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "1"))
 
 # NVIDIA NIM AI Model settings (NVIDIA Nemotron 3.5 Bolt E4B content generation)
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
-NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b").strip()
+_raw_nvidia_model = os.getenv("NVIDIA_MODEL", "").strip()
+_LEGACY_MODELS = {"", "deepseek-ai/deepseek-v3.2", "stepfun-ai/step-3.5-flash"}
+NVIDIA_MODEL = "nvidia/nemotron-3.5-bolt-e4b" if _raw_nvidia_model in _LEGACY_MODELS else _raw_nvidia_model
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip()
 
 # Admin IDs (users with full rights to add/remove users and manage the bot)

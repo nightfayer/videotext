@@ -33,7 +33,7 @@ from audio_utils import (
 from fast_download import fast_download_file
 from transcriber import transcriber
 from video_uniquifier import async_uniquify_video
-from post_formatter import generate_telegram_post
+from post_formatter import generate_telegram_post, sanitize_telegram_html
 
 # Использование MemorySession исключает блокировки файлов SQLite (database is locked) в Docker
 client = TelegramClient(
@@ -364,7 +364,7 @@ async def mode_post_handler(event):
     user_modes[event.sender_id] = "post"
     await event.respond(
         "✍️ **Включен режим: Оформление ТГ-постов**\n\n"
-        "Пришлите мне любой черновик, мысли, статью или расшифровку — я красиво оформлю их в готовый, стильный пост для Telegram с цепляющим заголовком, структурой, цитатами и хэштегами!",
+        "Пришлите мне **текстовый черновик, мысли, голосовое сообщение, кружочек или видео** — я распознаю речь и сразу оформлю всё в готовый, живой пост для Telegram!",
         buttons=get_mode_keyboard(event.sender_id)
     )
 
@@ -378,7 +378,7 @@ async def admin_panel_handler(event):
     await event.respond(text, buttons=buttons)
 
 
-@client.on(events.NewMessage(incoming=True, pattern=r'^/(adduser|add_user|allow)(\s+.*)?$'))
+@client.on(events.NewMessage(incoming=True, pattern=r'(?s)^/(adduser|add_user|allow)(\s+.*)?$'))
 async def add_user_handler(event):
     if not config.is_admin(event.sender_id):
         await event.respond("⛔ **Доступ запрещен.** Эта команда доступна только администраторам бота.")
@@ -423,7 +423,7 @@ async def add_user_handler(event):
     await event.respond("\n".join(results), buttons=get_mode_keyboard(event.sender_id))
 
 
-@client.on(events.NewMessage(incoming=True, pattern=r'^/(deluser|del_user|remove_user|deny)(\s+.*)?$'))
+@client.on(events.NewMessage(incoming=True, pattern=r'(?s)^/(deluser|del_user|remove_user|deny)(\s+.*)?$'))
 async def del_user_handler(event):
     if not config.is_admin(event.sender_id):
         await event.respond("⛔ **Доступ запрещен.** Эта команда доступна только администраторам бота.")
@@ -597,7 +597,7 @@ async def cancel_callback_handler(event):
         pass
 
 
-@client.on(events.NewMessage(incoming=True, pattern=r'^/post(\s+.*)?$'))
+@client.on(events.NewMessage(incoming=True, pattern=r'(?s)^/post(\s+.*)?$'))
 async def post_cmd_handler(event):
     if not check_access(event.sender_id):
         return
@@ -678,8 +678,8 @@ async def process_and_send_post(event, raw_text: str):
             except Exception:
                 pass
     else:
-        part1 = html_post[:3800]
-        part2 = html_post[3800:]
+        part1 = sanitize_telegram_html(html_post[:3800])
+        part2 = sanitize_telegram_html(html_post[3800:])
         try:
             await progress_msg.edit(part1, parse_mode="html")
             await event.respond(part2, parse_mode="html")
@@ -877,6 +877,36 @@ async def media_handler(event):
 
             if not text:
                 await status_msg.edit("⚠️ В файле не обнаружена понятная речь.")
+                return
+
+            # Если включен режим «Написать ТГ-пост», сразу превращаем расшифровку голоса/кружочка в готовый пост!
+            if user_mode == "post":
+                await status_msg.edit(
+                    "✍️ **Речь распознана! Оформляю пост для Telegram...**\n"
+                    f"Модель: `{config.NVIDIA_MODEL}` ⚡"
+                )
+                success_p, html_post, err_p = await generate_telegram_post(text)
+                if not success_p:
+                    await status_msg.edit(
+                        f"⚠️ **Не удалось сгенерировать пост:** {err_p}\n\n"
+                        f"📝 **Расшифрованный текст:**\n{text[:3000]}"
+                    )
+                    return
+
+                if len(html_post) <= 4000:
+                    try:
+                        await status_msg.edit(html_post, parse_mode="html")
+                    except Exception:
+                        await status_msg.edit(html_post, parse_mode=None)
+                else:
+                    p1 = sanitize_telegram_html(html_post[:3800])
+                    p2 = sanitize_telegram_html(html_post[3800:])
+                    try:
+                        await status_msg.edit(p1, parse_mode="html")
+                        await event.respond(p2, parse_mode="html")
+                    except Exception:
+                        await status_msg.edit(p1, parse_mode=None)
+                        await event.respond(p2, parse_mode=None)
                 return
 
             # 4. Save results to temporary files

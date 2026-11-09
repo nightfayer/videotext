@@ -38,7 +38,7 @@ from audio_utils import (
 )
 from transcriber import transcriber
 from video_uniquifier import async_uniquify_video
-from post_formatter import generate_telegram_post
+from post_formatter import generate_telegram_post, sanitize_telegram_html
 
 class IPv4AiohttpSession(AiohttpSession):
     """Ensures IPv4 connection to avoid Windows/Linux IPv6 semaphore timeout issues."""
@@ -326,7 +326,7 @@ async def mode_post_handler(message: Message):
     user_modes[message.from_user.id] = "post"
     await message.answer(
         "✍️ **Включен режим: Оформление ТГ-постов**\n\n"
-        "Пришлите мне любой черновик, мысли, статью или расшифровку — я красиво оформлю их в готовый, стильный пост для Telegram с цепляющим заголовком, структурой, цитатами и хэштегами!",
+        "Пришлите мне **текстовый черновик, мысли, голосовое сообщение, кружочек или видео** — я распознаю речь и сразу оформлю всё в готовый, живой пост для Telegram!",
         parse_mode="Markdown",
         reply_markup=get_mode_keyboard(message.from_user.id)
     )
@@ -595,8 +595,8 @@ async def process_and_send_post(message: Message, raw_text: str):
             except Exception:
                 pass
     else:
-        part1 = html_post[:3800]
-        part2 = html_post[3800:]
+        part1 = sanitize_telegram_html(html_post[:3800])
+        part2 = sanitize_telegram_html(html_post[3800:])
         try:
             await progress_msg.edit_text(part1, parse_mode="HTML")
             await message.reply(part2, parse_mode="HTML")
@@ -775,6 +775,37 @@ async def media_handler(message: Message, bot: Bot):
 
             if not text:
                 await status_msg.edit_text("⚠️ В файле не обнаружена понятная речь.")
+                return
+
+            # Если включен режим «Написать ТГ-пост», сразу превращаем расшифровку голоса/кружочка в готовый пост!
+            if user_mode == "post":
+                await status_msg.edit_text(
+                    "✍️ **Речь распознана! Оформляю пост для Telegram...**\n"
+                    f"Модель: `{config.NVIDIA_MODEL}` ⚡",
+                    parse_mode="Markdown"
+                )
+                success_p, html_post, err_p = await generate_telegram_post(text)
+                if not success_p:
+                    await status_msg.edit_text(
+                        f"⚠️ **Не удалось сгенерировать пост:** {err_p}\n\n"
+                        f"📝 **Расшифрованный текст:**\n{text[:3000]}"
+                    )
+                    return
+
+                if len(html_post) <= 4000:
+                    try:
+                        await status_msg.edit_text(html_post, parse_mode="HTML")
+                    except Exception:
+                        await status_msg.edit_text(html_post, parse_mode=None)
+                else:
+                    p1 = sanitize_telegram_html(html_post[:3800])
+                    p2 = sanitize_telegram_html(html_post[3800:])
+                    try:
+                        await status_msg.edit_text(p1, parse_mode="HTML")
+                        await message.reply(p2, parse_mode="HTML")
+                    except Exception:
+                        await status_msg.edit_text(p1, parse_mode=None)
+                        await message.reply(p2, parse_mode=None)
                 return
 
             # 4. Save results to temporary files
