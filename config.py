@@ -62,9 +62,9 @@ BEAM_SIZE = int(os.getenv("BEAM_SIZE", "1"))
 # Max concurrent transcriptions on GPU
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "1"))
 
-# NVIDIA NIM AI Model settings (Google DiffusionGemma content generation)
+# NVIDIA NIM AI Model settings (NVIDIA Nemotron 3.5 Bolt E4B content generation)
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
-NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "google/diffusiongemma-26b-a4b-it").strip()
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b").strip()
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip()
 
 # Admin IDs (users with full rights to add/remove users and manage the bot)

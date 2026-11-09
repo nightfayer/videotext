@@ -297,6 +297,8 @@ async def generate_telegram_post(
                         return False, "", "Нейросеть вернула пустой ответ."
 
                     raw_post = choices[0].get("message", {}).get("content", "").strip()
+                    # Удаляем возможные блоки размышлений модели (<think>...</think>, <thought>...</thought>)
+                    raw_post = re.sub(r"<(?:think|thought)>.*?</(?:think|thought)>", "", raw_post, flags=re.DOTALL).strip()
                     if not raw_post:
                         return False, "", "Получен пустой текст ответа от модели."
 

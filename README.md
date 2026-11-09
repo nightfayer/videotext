@@ -3,7 +3,7 @@
 Многофункциональный высокопроизводительный серверный и локальный Telegram-бот:
 * 🎙️ **Расшифровка аудио и видео в текст** с субтитрами `.srt` и документом Word `.docx` на базе **Faster-Whisper** (с ленивой загрузкой и выгрузкой из RAM при простое).
 * ✨ **Уникализатор видео без потери качества** (`CRF 18`) с живым прогресс-баром для Instagram Reels, TikTok и YouTube Shorts.
-* ✍️ **Умный копирайтер и редактор постов** с эстетичной типографикой Telegram (`<b>`, `<i>`, `<blockquote>`, `<code>`) на базе нейросети **Google DiffusionGemma 26B** (NVIDIA NIM).
+* ✍️ **Умный копирайтер и редактор постов** с эстетичной типографикой Telegram (`<b>`, `<i>`, `<blockquote>`, `<code>`) на базе нейросети **NVIDIA Nemotron 3.5 Bolt E4B** (NVIDIA NIM).
 * 👑 **Админ-панель и управление белым списком:** добавление и удаление пользователей на лету командами или кнопками без перезапуска бота.
 * 📦 **Поддержка больших файлов до 2 ГБ** через высокоскоростной параллельный протокол MTProto (Telethon).
 
@@ -154,7 +154,7 @@ WHISPER_LANGUAGE=ru
 
 # Нейросеть для генерации ТГ-постов
 NVIDIA_API_KEY=nvapi-...
-NVIDIA_MODEL=google/diffusiongemma-26b-a4b-it
+NVIDIA_MODEL=nvidia/nemotron-3.5-bolt-e4b
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 ```
 
@@ -187,7 +187,7 @@ python bot.py
 * [`bot.py`](bot.py) — главная точка входа, инициализация окружения, автопроверка FFmpeg и маршрутизация.
 * [`bot_telethon.py`](bot_telethon.py) — основной движок бота на MTProto (файлы до 2 ГБ, очередь задач, живой прогресс-бар, интерактивная админ-панель).
 * [`bot_aiogram.py`](bot_aiogram.py) — резервный fallback-движок на Bot API для работы без API ID/Hash (файлы до 20 МБ, полная поддержка админ-панели).
-* [`post_formatter.py`](post_formatter.py) — генератор постов на базе Google DiffusionGemma, конвертер Markdown в Telegram HTML и санитайзер тегов.
+* [`post_formatter.py`](post_formatter.py) — генератор постов на базе NVIDIA Nemotron 3.5 Bolt E4B, конвертер Markdown в Telegram HTML и санитайзер тегов.
 * [`video_uniquifier.py`](video_uniquifier.py) — 1-проходный алгоритм уникализации видео через FFmpeg с безопасным масштабированием до 1080p и парсингом прогресса в реальном времени.
 * [`transcriber.py`](transcriber.py) — модуль транскрибации речи (Faster-Whisper, ленивая загрузка, автовыгрузка из RAM после 10 минут простоя).
 * [`fast_download.py`](fast_download.py) — параллельное чанковое скачивание файлов из Telegram на максимальной скорости сети.
