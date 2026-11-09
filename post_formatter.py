@@ -118,7 +118,7 @@ def sanitize_telegram_html(text: str) -> str:
     """
     Cleans, normalizes, and balances HTML according to Telegram Bot API requirements.
     """
-    # 1. Replace line breaks and paragraphs
+    # 1. Replace common HTML block/break tags
     text = re.sub(r"<\s*br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*hr\s*/?>", "\n---\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*p\s*>", "", text, flags=re.IGNORECASE)
@@ -127,16 +127,20 @@ def sanitize_telegram_html(text: str) -> str:
     text = re.sub(r"<\s*/li\s*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*/?(?:ul|ol|div|span)[^>]*>", "", text, flags=re.IGNORECASE)
 
-    # 2. Filter allowed tags
-    def tag_filter(match):
+    # 2. Extract and validate allowed HTML tags, escaping any stray < or > characters
+    valid_tags = []
+    def tag_extractor(match):
         tag_content = match.group(1).strip()
         if tag_content.startswith("/"):
-            tag_name = tag_content[1:].split()[0].lower()
+            tag_name = tag_content[1:].split()[0].lower() if tag_content[1:].split() else ""
             if tag_name in ALLOWED_TAGS:
-                return f"</{tag_name}>"
+                valid_tags.append(f"</{tag_name}>")
+                return f"___VALIDTAG_{len(valid_tags)-1}___"
             return ""
 
         parts = tag_content.split(None, 1)
+        if not parts:
+            return ""
         tag_name = parts[0].lower()
         attr = parts[1] if len(parts) > 1 else ""
 
@@ -145,27 +149,40 @@ def sanitize_telegram_html(text: str) -> str:
 
         if tag_name == "blockquote":
             if "expandable" in attr.lower():
-                return "<blockquote expandable>"
-            return "<blockquote>"
+                valid_tags.append("<blockquote expandable>")
+            else:
+                valid_tags.append("<blockquote>")
+            return f"___VALIDTAG_{len(valid_tags)-1}___"
 
         if tag_name == "code":
             if "class=" in attr:
                 m_class = re.search(r'class=["\']?(language-[\w+-]+)["\']?', attr)
                 if m_class:
-                    return f'<code class="{m_class.group(1)}">'
-            return "<code>"
+                    valid_tags.append(f'<code class="{m_class.group(1)}">')
+                    return f"___VALIDTAG_{len(valid_tags)-1}___"
+            valid_tags.append("<code>")
+            return f"___VALIDTAG_{len(valid_tags)-1}___"
 
         if tag_name == "a":
             m_href = re.search(r'href=["\'](https?://[^"\']+)["\']', attr)
             if m_href:
-                return f'<a href="{m_href.group(1)}">'
+                valid_tags.append(f'<a href="{m_href.group(1)}">')
+                return f"___VALIDTAG_{len(valid_tags)-1}___"
             return ""
 
-        return f"<{tag_name}>"
+        valid_tags.append(f"<{tag_name}>")
+        return f"___VALIDTAG_{len(valid_tags)-1}___"
 
-    text = re.sub(r"<([^>]+)>", tag_filter, text)
+    text = re.sub(r"<(/?[a-zA-Z][a-zA-Z0-9\-_]*(?:\s+[^<>]*)?)>", tag_extractor, text)
 
-    # 3. Balance tags
+    # Escape any remaining raw < or > so Telegram HTML parser never fails on "<3" or "->"
+    text = text.replace("<", "&lt;").replace(">", "&gt;")
+
+    # Restore valid tags
+    for idx, tag_str in enumerate(valid_tags):
+        text = text.replace(f"___VALIDTAG_{idx}___", tag_str)
+
+    # 3. Balance allowed tags
     tag_regex = re.compile(r"<\s*(/)?\s*([a-zA-Z0-9\-_]+)(?:\s+[^>]*)?>")
     stack = []
     balanced_chunks = []
@@ -184,12 +201,13 @@ def sanitize_telegram_html(text: str) -> str:
                 balanced_chunks.append(text[last_idx:match.end()])
                 last_idx = match.end()
             elif tag_name in stack:
+                balanced_chunks.append(text[last_idx:match.start()])
                 while stack and stack[-1] != tag_name:
                     unclosed = stack.pop()
                     balanced_chunks.append(f"</{unclosed}>")
                 if stack and stack[-1] == tag_name:
                     stack.pop()
-                balanced_chunks.append(text[last_idx:match.end()])
+                balanced_chunks.append(f"</{tag_name}>")
                 last_idx = match.end()
             else:
                 balanced_chunks.append(text[last_idx:match.start()])
@@ -212,7 +230,7 @@ def sanitize_telegram_html(text: str) -> str:
 
 def md_to_telegram_html(text: str) -> str:
     """
-    Converts Markdown to clean, robust Telegram HTML.
+    Converts Markdown and mixed HTML to clean, robust Telegram HTML.
     """
     if not text:
         return ""
@@ -234,7 +252,7 @@ def md_to_telegram_html(text: str) -> str:
 
     text = re.sub(r"`([^`\n]+)`", save_inline_code, text)
 
-    # Convert blockquotes: > line
+    # Convert blockquotes: > line or &gt; line
     lines = text.split("\n")
     processed_lines = []
     in_quote = False
@@ -242,19 +260,25 @@ def md_to_telegram_html(text: str) -> str:
 
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("&gt; ") or stripped.startswith("> "):
+        is_gt = stripped.startswith(">") and not stripped.startswith(">>")
+        is_escaped_gt = stripped.startswith("&gt;")
+        if is_gt or is_escaped_gt:
             in_quote = True
-            content = line[line.find(">") + 1:].strip()
+            if is_escaped_gt:
+                idx = line.find("&gt;") + 4
+            else:
+                idx = line.find(">") + 1
+            content = line[idx:].strip()
             quote_acc.append(content)
         else:
             if in_quote:
-                quote_text = html.escape("\n".join(quote_acc))
+                quote_text = "\n".join(quote_acc)
                 processed_lines.append(f"<blockquote>{quote_text}</blockquote>")
                 quote_acc = []
                 in_quote = False
             processed_lines.append(line)
     if in_quote:
-        quote_text = html.escape("\n".join(quote_acc))
+        quote_text = "\n".join(quote_acc)
         processed_lines.append(f"<blockquote>{quote_text}</blockquote>")
 
     text = "\n".join(processed_lines)
@@ -293,7 +317,7 @@ def md_to_telegram_html(text: str) -> str:
 
 async def generate_telegram_post(
     raw_text: str,
-    max_tokens: int = 1500,
+    max_tokens: int = 4096,
     temperature: float = 0.7
 ) -> Tuple[bool, str, str]:
     """
@@ -361,9 +385,11 @@ async def generate_telegram_post(
                     if not choices:
                         return False, "", "Нейросеть вернула пустой ответ."
 
-                    raw_post = choices[0].get("message", {}).get("content", "").strip()
-                    # Удаляем возможные блоки размышлений модели (<think>...</think>, <thought>...</thought>)
+                    msg_obj = choices[0].get("message") or {}
+                    raw_post = (msg_obj.get("content") or "").strip()
+                    # Удаляем возможные блоки размышлений модели (<think>...</think>, <thought>...</thought>), включая незакрытые
                     raw_post = re.sub(r"<(?:think|thought)>.*?</(?:think|thought)>", "", raw_post, flags=re.DOTALL).strip()
+                    raw_post = re.sub(r"^<(?:think|thought)>.*", "", raw_post, flags=re.DOTALL).strip()
                     if not raw_post:
                         return False, "", "Получен пустой текст ответа от модели."
 

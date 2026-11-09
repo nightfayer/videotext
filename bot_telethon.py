@@ -580,8 +580,8 @@ async def cancel_callback_handler(event):
             pass
         return
 
-    # Check access: only original sender or allowed users can cancel
-    if event.sender_id != task_info["sender_id"] and not check_access(event.sender_id):
+    # Check access: only original sender or bot admin can cancel
+    if event.sender_id != task_info["sender_id"] and not config.is_admin(event.sender_id):
         await event.answer("⛔ Вы не можете отменить чужую задачу.", alert=True)
         return
 
@@ -590,9 +590,9 @@ async def cancel_callback_handler(event):
     if task and not task.done():
         task.cancel()
 
-    await event.answer("Загрузка отменяется...", alert=False)
+    await event.answer("Задача отменяется...", alert=False)
     try:
-        await event.edit("🚫 **Скачивание отменено пользователем.**", buttons=None)
+        await event.edit("🚫 **Задача отменена пользователем.**", buttons=None)
     except Exception:
         pass
 
@@ -616,7 +616,7 @@ async def post_cmd_handler(event):
             "• Либо переключитесь кнопкой в режим **✍️ Написать ТГ-пост** и пришлите текст сообщением.\n"
             "• Либо отправьте: `/post <ваш черновик>`\n"
             "• Либо ответьте командой `/post` на любое сообщение с текстом.",
-            buttons=get_mode_keyboard()
+            buttons=get_mode_keyboard(event.sender_id)
         )
         return
 
@@ -637,7 +637,7 @@ async def text_handler(event):
     if not text:
         return
 
-    if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост", "🚀 Меню / Старт"]:
+    if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост", "🚀 Меню / Старт", "👑 Управление доступом"]:
         return
 
     current_mode = user_modes.get(event.sender_id, "transcribe")
@@ -648,14 +648,14 @@ async def text_handler(event):
             "⚠️ **Включен режим: Уникализация видео.**\n\n"
             "Пожалуйста, пришлите видеофайл или кружочек.\n"
             "Чтобы красиво оформить текст в пост, переключитесь кнопкой на **✍️ Написать ТГ-пост**.",
-            buttons=get_mode_keyboard()
+            buttons=get_mode_keyboard(event.sender_id)
         )
     else:
         await event.respond(
             "🎙️ **Включен режим: Видео в Текст.**\n\n"
             "Пришлите видео, кружочек или аудиофайл для расшифровки речи.\n"
             "Чтобы красиво оформить текст в пост, переключитесь кнопкой на **✍️ Написать ТГ-пост**.",
-            buttons=get_mode_keyboard()
+            buttons=get_mode_keyboard(event.sender_id)
         )
 
 
@@ -958,7 +958,7 @@ async def media_handler(event):
 
         except asyncio.CancelledError:
             try:
-                await status_msg.edit("🚫 **Скачивание отменено пользователем.**", buttons=None)
+                await status_msg.edit("🚫 **Задача отменена пользователем.**", buttons=None)
             except Exception:
                 pass
         except Exception as e:

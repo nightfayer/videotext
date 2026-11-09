@@ -529,7 +529,7 @@ async def post_cmd_handler(message: Message):
             "• Либо отправьте: `/post <ваш черновик>`\n"
             "• Либо ответьте командой `/post` на любое сообщение с текстом.",
             parse_mode="Markdown",
-            reply_markup=get_mode_keyboard()
+            reply_markup=get_mode_keyboard(message.from_user.id)
         )
         return
 
@@ -551,7 +551,7 @@ async def text_handler(message: Message):
     if not text:
         return
 
-    if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост", "🚀 Меню / Старт"]:
+    if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост", "🚀 Меню / Старт", "👑 Управление доступом"]:
         return
 
     current_mode = user_modes.get(message.from_user.id, "transcribe")
@@ -563,7 +563,7 @@ async def text_handler(message: Message):
             "Пожалуйста, пришлите видеофайл или кружочек.\n"
             "Чтобы красиво оформить текст в пост, переключитесь кнопкой на **✍️ Написать ТГ-пост**.",
             parse_mode="Markdown",
-            reply_markup=get_mode_keyboard()
+            reply_markup=get_mode_keyboard(message.from_user.id)
         )
     else:
         await message.answer(
@@ -571,7 +571,7 @@ async def text_handler(message: Message):
             "Пришлите видео, кружочек или аудиофайл для расшифровки речи.\n"
             "Чтобы красиво оформить текст в пост, переключитесь кнопкой на **✍️ Написать ТГ-пост**.",
             parse_mode="Markdown",
-            reply_markup=get_mode_keyboard()
+            reply_markup=get_mode_keyboard(message.from_user.id)
         )
 
 
