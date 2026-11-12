@@ -124,13 +124,19 @@ def build_uniquify_command(
     ffmpeg_bin = get_ffmpeg_executable()
     total_duration = get_media_duration(input_file)
 
-    # 1. Randomized visual parameters
-    zoom = round(random.uniform(1.020, 1.028), 3)
+    # 1. Randomized visual & audio parameters
+    zoom = round(random.uniform(1.022, 1.032), 3)
     angle_deg = round(random.choice([-1, 1]) * random.uniform(0.30, 0.50), 2)
     speed = round(random.uniform(1.006, 1.014), 3)
+    pitch = round(1.0 + random.choice([-1, 1]) * random.uniform(0.004, 0.007), 4)
     contrast = round(random.uniform(1.010, 1.022), 3)
     saturation = round(random.uniform(1.010, 1.022), 3)
     brightness = round(random.uniform(0.003, 0.007), 3)
+    cb_rs = round(random.uniform(-0.015, 0.015), 3)
+    cb_bs = round(random.uniform(-0.015, 0.015), 3)
+    gop_size = random.randint(45, 90)
+    pan_freq_x = round(random.uniform(0.55, 0.95), 2)
+    pan_freq_y = round(random.uniform(0.45, 0.85), 2)
     noise_seed = random.randint(1000, 999999)
     vignette_div = random.randint(140, 180)
 
@@ -152,8 +158,10 @@ def build_uniquify_command(
     vf_filters.extend([
         f"scale=ceil(iw*{zoom}/2)*2:ceil(ih*{zoom}/2)*2:flags=lanczos",
         f"rotate={angle_deg}*PI/180:ow=iw:oh=ih",
-        "crop=iw:ih",
+        # Floating micro-pan crop: shifts each frame by a few pixels over time while keeping exact even dimensions
+        f"crop=w=trunc(iw/{zoom}/2)*2:h=trunc(ih/{zoom}/2)*2:x='(iw-ow)/2+(iw-ow)*0.35*sin(t*{pan_freq_x})':y='(ih-oh)/2+(ih-oh)*0.35*cos(t*{pan_freq_y})'",
         f"eq=contrast={contrast}:brightness={brightness}:saturation={saturation}",
+        f"colorbalance=rs={cb_rs}:bs={cb_bs}",
         f"noise=alls=2:allf=t:all_seed={noise_seed}",
         f"vignette=PI/{vignette_div}",
         f"setpts=PTS/{speed}"
@@ -196,6 +204,7 @@ def build_uniquify_command(
         ])
 
     cmd.extend([
+        "-g", str(gop_size),
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
         "-map_metadata", "-1",
@@ -212,12 +221,16 @@ def build_uniquify_command(
     if with_audio:
         eq_freq = random.randint(900, 2400)
         eq_gain = round(random.uniform(0.3, 0.5), 2)
+        atempo_comp = round(speed / pitch, 4)
         af_filters = []
         if trim_start > 0:
             af_filters.extend([f"atrim=start={trim_start}", "asetpts=PTS-STARTPTS"])
         af_filters.extend([
+            "aresample=48000",
+            f"asetrate=48000*{pitch}",
+            "aresample=48000",
             f"equalizer=f={eq_freq}:t=q:w=1:g={eq_gain}",
-            f"atempo={speed}",
+            f"atempo={atempo_comp}",
             "volume=1.01"
         ])
         af_str = ",".join(af_filters)
