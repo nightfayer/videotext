@@ -349,10 +349,11 @@ async def async_uniquify_video(
     if input_file.stat().st_size == 0:
         return False, "Входной файл пуст (0 байт).", {}
 
-    cmd, total_duration, meta_info = build_uniquify_command(
+    cmd, total_duration, meta_info = await asyncio.to_thread(
+        build_uniquify_command,
         input_file,
         output_file,
-        flip_horizontal=flip_horizontal
+        flip_horizontal
     )
 
     try:
@@ -363,11 +364,12 @@ async def async_uniquify_video(
         # If direct pass failed, try normalization fallback
         if retcode != 0:
             print(f"[Uniquifier] Прямая обработка завершилась ошибкой ({err_msg[:120]}). Запуск аварийной нормализации...", flush=True)
-            norm_file = normalize_video(input_file)
+            norm_file = await asyncio.to_thread(normalize_video, input_file)
             if norm_file != input_file and norm_file.exists():
                 try:
-                    cmd_norm, norm_dur, meta_info = build_uniquify_command(
-                        norm_file, output_file, flip_horizontal=flip_horizontal
+                    cmd_norm, norm_dur, meta_info = await asyncio.to_thread(
+                        build_uniquify_command,
+                        norm_file, output_file, flip_horizontal
                     )
                     retcode, err_msg = await _execute_ffmpeg_proc(
                         cmd_norm, norm_dur, progress_callback=progress_callback, cancel_event=cancel_event

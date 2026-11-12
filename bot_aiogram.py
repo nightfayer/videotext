@@ -131,9 +131,44 @@ def get_file_info(message: Message):
     return None, None, None, None
 
 
-user_modes = {}  # user_id -> 'transcribe' | 'uniqueize' | 'post'
-user_flip = {}   # user_id -> bool (horizontal flip mirroring)
-recent_transcripts = {}  # msg_id -> full_text (cache up to 50 transcripts for 1-click post generation)
+recent_transcripts = {}   # msg_id -> full_text (cache up to 50 transcripts for 1-click post generation)
+recent_post_sources = {}  # msg_id -> raw_text (cache up to 50 post drafts for regen/shorten)
+
+
+def build_uniqueize_message(user_id: int):
+    is_flip = config.get_user_flip(user_id)
+    flip_status = "ВКЛЮЧЕНО ✅" if is_flip else "ВЫКЛЮЧЕНО ❌"
+    flip_btn_label = "🪞 Зеркало: ВКЛ ✅ (выключить)" if is_flip else "🪞 Зеркало: ВЫКЛ ❌ (включить)"
+    text = (
+        "✨ **Включен режим: Уникализация видео**\n\n"
+        "Отправьте мне видео или кружочек — я уникализирую его без потери качества для **Instagram Reels, TikTok и Shorts**.\n\n"
+        "🛡️ **Комплекс анти-детект защиты:**\n"
+        "• 📱 Спуфинг мобильных камер (Apple iPhone 16 Pro, Samsung S24 Ultra, Pixel 8)\n"
+        "• ✂️ Микро-срезка первых 0.15 сек (ломает совпадение первого ключевого кадра)\n"
+        "• 🔍 Микро-зум и перцептивный шум на каждом кадре\n"
+        "• 🖼️ Мягкая виньетка и цветокоррекция\n"
+        "• 🎵 Микро-эквалайзер звука и акустический сдвиг Sound ID\n"
+        "• ⚡ Аппаратное ускорение NVIDIA NVENC / CPU\n\n"
+        f"🪞 **Зеркальное отражение (Flip):** `{flip_status}`\n"
+        "💡 _Нажмите кнопку ниже или отправьте /flip для переключения зеркала._"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=flip_btn_label, callback_data="toggle_flip")]
+    ])
+    return text, kb
+
+
+def get_post_action_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔄 Другой вариант", callback_data="post_regen"),
+        InlineKeyboardButton(text="✂️ Короче", callback_data="post_shorter"),
+    ]])
+
+
+def _cache_post_source(msg_id: int, raw_text: str):
+    if len(recent_post_sources) >= 50:
+        recent_post_sources.pop(next(iter(recent_post_sources)), None)
+    recent_post_sources[msg_id] = raw_text
 
 
 class ThrottledUniquifyProgress:
@@ -243,7 +278,7 @@ async def start_handler(message: Message):
         )
         return
 
-    user_modes[message.from_user.id] = "transcribe"
+    config.set_user_mode(message.from_user.id, "transcribe")
     welcome_text = (
         "👋 **Привет! Я многофункциональный бот для контента.**\n\n"
         "⚡ **Выберите нужный режим кнопками ниже:**\n\n"
@@ -268,7 +303,7 @@ async def start_handler(message: Message):
 async def mode_transcribe_handler(message: Message):
     if not check_access(message.from_user.id):
         return
-    user_modes[message.from_user.id] = "transcribe"
+    config.set_user_mode(message.from_user.id, "transcribe")
     await message.answer(
         "🎙️ **Включен режим: Видео в Текст**\n\n"
         "Отправьте мне видео, кружочек, аудиофайл или голосовое сообщение — я переведу речь в текст, создам файл субтитров .srt и документ Word!",
@@ -281,32 +316,32 @@ async def mode_transcribe_handler(message: Message):
 async def mode_uniqueize_handler(message: Message):
     if not check_access(message.from_user.id):
         return
-    user_modes[message.from_user.id] = "uniqueize"
-    flip_status = "ВКЛЮЧЕНО ✅" if user_flip.get(message.from_user.id, False) else "ВЫКЛЮЧЕНО ❌"
-    await message.answer(
-        "✨ **Включен режим: Уникализация видео**\n\n"
-        "Отправьте мне видео или кружочек — я уникализирую его без потери качества для **Instagram Reels, TikTok и Shorts**.\n\n"
-        "🛡️ **Комплекс анти-детект защиты:**\n"
-        "• 📱 Спуфинг мобильных камер (Apple iPhone 16 Pro, Samsung S24 Ultra, Pixel 8)\n"
-        "• ✂️ Микро-срезка первых 0.15 сек (ломает совпадение первого ключевого кадра)\n"
-        "• 🔍 Микро-зум и перцептивный шум на каждом кадре\n"
-        "• 🖼️ Мягкая виньетка и цветокоррекция\n"
-        "• 🎵 Микро-эквалайзер звука и акустический сдвиг Sound ID\n"
-        "• ⚡ Аппаратное ускорение NVIDIA NVENC / CPU\n\n"
-        f"🪞 **Зеркальное отражение (Flip):** `{flip_status}`\n"
-        "💡 _Отправьте команду /flip для включения или выключения зеркала._",
-        parse_mode="Markdown",
-        reply_markup=get_mode_keyboard(message.from_user.id)
-    )
+    config.set_user_mode(message.from_user.id, "uniqueize")
+    text, kb = build_uniqueize_message(message.from_user.id)
+    await message.answer(text, parse_mode="Markdown", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "toggle_flip")
+async def flip_inline_callback_handler(callback: CallbackQuery):
+    if not check_access(callback.from_user.id):
+        await callback.answer("⛔ Доступ ограничен.", show_alert=True)
+        return
+    new_val = not config.get_user_flip(callback.from_user.id)
+    config.set_user_flip(callback.from_user.id, new_val)
+    text, kb = build_uniqueize_message(callback.from_user.id)
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        pass
+    await callback.answer("🪞 Зеркало ВКЛЮЧЕНО ✅" if new_val else "🪞 Зеркало ВЫКЛЮЧЕНО ❌")
 
 
 @dp.message(Command("flip"))
 async def flip_toggle_handler(message: Message):
     if not check_access(message.from_user.id):
         return
-    current = user_flip.get(message.from_user.id, False)
-    new_val = not current
-    user_flip[message.from_user.id] = new_val
+    new_val = not config.get_user_flip(message.from_user.id)
+    config.set_user_flip(message.from_user.id, new_val)
     state_str = "ВКЛЮЧЕНО ✅" if new_val else "ВЫКЛЮЧЕНО ❌"
     tip = (
         "Видео будет отражено по горизонтали (зеркальный эффект для максимального обхода алгоритмов соцсетей)."
@@ -324,7 +359,7 @@ async def flip_toggle_handler(message: Message):
 async def mode_post_handler(message: Message):
     if not check_access(message.from_user.id):
         return
-    user_modes[message.from_user.id] = "post"
+    config.set_user_mode(message.from_user.id, "post")
     await message.answer(
         "✍️ **Включен режим: Оформление ТГ-постов**\n\n"
         "Пришлите мне **текстовый черновик, мысли, голосовое сообщение, кружочек или видео** — я распознаю речь и сразу оформлю всё в готовый, живой пост для Telegram!",
@@ -562,6 +597,62 @@ async def post_cmd_handler(message: Message):
     await process_and_send_post(message, raw_text)
 
 
+@dp.callback_query(F.data.in_({"post_regen", "post_shorter"}))
+async def post_action_callback_handler(callback: CallbackQuery):
+    if not check_access(callback.from_user.id):
+        await callback.answer("⛔ Доступ ограничен.", show_alert=True)
+        return
+
+    action = callback.data
+    raw_text = recent_post_sources.get(callback.message.message_id, "")
+    if not raw_text and callback.message and callback.message.text:
+        raw_text = callback.message.text.strip()
+
+    if not raw_text:
+        await callback.answer("⚠️ Исходный текст не найден. Отправьте его ещё раз.", show_alert=True)
+        return
+
+    if action == "post_regen":
+        await callback.answer("🔄 Пишу другой вариант...")
+        style_hint = "alt"
+        status_label = "🔄 **Генерирую другой вариант поста...**"
+    else:
+        await callback.answer("✂️ Сокращаю пост...")
+        style_hint = "shorter"
+        status_label = "✂️ **Делаю пост короче и ёмче...**"
+
+    try:
+        await callback.message.edit_text(
+            f"{status_label}\nМодель: `{config.NVIDIA_MODEL}` ⚡",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    success, html_post, err = await generate_telegram_post(raw_text, style_hint=style_hint)
+    post_kb = get_post_action_keyboard()
+    if not success:
+        await callback.message.edit_text(f"❌ {err or 'Не удалось обновить пост.'}", reply_markup=post_kb)
+        return
+
+    if len(html_post) <= 4000:
+        _cache_post_source(callback.message.message_id, raw_text)
+        try:
+            await callback.message.edit_text(html_post, parse_mode="HTML", reply_markup=post_kb)
+        except Exception:
+            await callback.message.edit_text(html_post, parse_mode=None, reply_markup=post_kb)
+    else:
+        part1 = sanitize_telegram_html(html_post[:3800])
+        part2 = sanitize_telegram_html(html_post[3800:])
+        try:
+            await callback.message.edit_text(part1, parse_mode="HTML")
+            sent_msg = await callback.message.reply(part2, parse_mode="HTML", reply_markup=post_kb)
+        except Exception:
+            await callback.message.edit_text(part1, parse_mode=None)
+            sent_msg = await callback.message.reply(part2, parse_mode=None, reply_markup=post_kb)
+        _cache_post_source(sent_msg.message_id, raw_text)
+
+
 @dp.message(F.text & ~F.text.startswith('/'))
 async def text_handler(message: Message):
     if not check_access(message.from_user.id):
@@ -580,7 +671,7 @@ async def text_handler(message: Message):
     if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост", "🚀 Меню / Старт", "👑 Управление доступом"]:
         return
 
-    current_mode = user_modes.get(message.from_user.id, "transcribe")
+    current_mode = config.get_user_mode(message.from_user.id)
     if current_mode == "post":
         await process_and_send_post(message, text)
     elif current_mode == "uniqueize":
@@ -612,12 +703,14 @@ async def process_and_send_post(message: Message, raw_text: str):
         await progress_msg.edit_text(f"❌ {err or 'Не удалось оформить пост.'}")
         return
 
+    post_kb = get_post_action_keyboard()
     if len(html_post) <= 4000:
+        _cache_post_source(progress_msg.message_id, raw_text)
         try:
-            await progress_msg.edit_text(html_post, parse_mode="HTML")
+            await progress_msg.edit_text(html_post, parse_mode="HTML", reply_markup=post_kb)
         except Exception:
             try:
-                await progress_msg.edit_text(html_post, parse_mode=None)
+                await progress_msg.edit_text(html_post, parse_mode=None, reply_markup=post_kb)
             except Exception:
                 pass
     else:
@@ -625,10 +718,11 @@ async def process_and_send_post(message: Message, raw_text: str):
         part2 = sanitize_telegram_html(html_post[3800:])
         try:
             await progress_msg.edit_text(part1, parse_mode="HTML")
-            await message.reply(part2, parse_mode="HTML")
+            sent_msg = await message.reply(part2, parse_mode="HTML", reply_markup=post_kb)
         except Exception:
             await progress_msg.edit_text(part1, parse_mode=None)
-            await message.reply(part2, parse_mode=None)
+            sent_msg = await message.reply(part2, parse_mode=None, reply_markup=post_kb)
+        _cache_post_source(sent_msg.message_id, raw_text)
 
 
 @dp.message(Command("settings"))
@@ -704,7 +798,7 @@ async def media_handler(message: Message, bot: Bot):
                 return
 
             # Check User Mode
-            user_mode = user_modes.get(message.from_user.id, "transcribe")
+            user_mode = config.get_user_mode(message.from_user.id)
 
             if user_mode == "uniqueize":
                 # Добавили проверку расширений для .mov, .heic
@@ -722,7 +816,7 @@ async def media_handler(message: Message, bot: Bot):
                     status_msg,
                     action_title="Уникализация видео"
                 )
-                is_flip = user_flip.get(message.from_user.id, False)
+                is_flip = config.get_user_flip(message.from_user.id)
                 flip_txt = " + зеркальное отражение" if is_flip else ""
                 await status_msg.edit_text(
                     f"✨ **Уникализация видео{flip_txt}...**\n"
@@ -818,20 +912,23 @@ async def media_handler(message: Message, bot: Bot):
                     )
                     return
 
+                post_kb = get_post_action_keyboard()
                 if len(html_post) <= 4000:
+                    _cache_post_source(status_msg.message_id, text)
                     try:
-                        await status_msg.edit_text(html_post, parse_mode="HTML")
+                        await status_msg.edit_text(html_post, parse_mode="HTML", reply_markup=post_kb)
                     except Exception:
-                        await status_msg.edit_text(html_post, parse_mode=None)
+                        await status_msg.edit_text(html_post, parse_mode=None, reply_markup=post_kb)
                 else:
                     p1 = sanitize_telegram_html(html_post[:3800])
                     p2 = sanitize_telegram_html(html_post[3800:])
                     try:
                         await status_msg.edit_text(p1, parse_mode="HTML")
-                        await message.reply(p2, parse_mode="HTML")
+                        sent_msg = await message.reply(p2, parse_mode="HTML", reply_markup=post_kb)
                     except Exception:
                         await status_msg.edit_text(p1, parse_mode=None)
-                        await message.reply(p2, parse_mode=None)
+                        sent_msg = await message.reply(p2, parse_mode=None, reply_markup=post_kb)
+                    _cache_post_source(sent_msg.message_id, text)
                 return
 
             # 4. Save results to temporary files

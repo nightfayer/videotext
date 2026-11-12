@@ -209,9 +209,42 @@ class ThrottledUniquifyProgress:
 
 
 active_tasks = {}
-user_modes = {}  # sender_id -> 'transcribe' | 'uniqueize' | 'post'
-user_flip = {}   # sender_id -> bool (horizontal flip mirroring)
-recent_transcripts = {}  # msg_id -> full_text (cache up to 50 transcripts for 1-click post generation)
+recent_transcripts = {}   # msg_id -> full_text (cache up to 50 transcripts for 1-click post generation)
+recent_post_sources = {}  # msg_id -> raw_text (cache up to 50 post drafts for regen/shorten)
+
+
+def build_uniqueize_message(user_id: int):
+    is_flip = config.get_user_flip(user_id)
+    flip_status = "ВКЛЮЧЕНО ✅" if is_flip else "ВЫКЛЮЧЕНО ❌"
+    flip_btn_label = "🪞 Зеркало: ВКЛ ✅ (выключить)" if is_flip else "🪞 Зеркало: ВЫКЛ ❌ (включить)"
+    text = (
+        "✨ **Включен режим: Уникализация видео**\n\n"
+        "Отправьте мне видео или кружочек — я уникализирую его без потери качества для **Instagram Reels, TikTok и Shorts**.\n\n"
+        "🛡️ **Комплекс анти-детект защиты:**\n"
+        "• 📱 Спуфинг мобильных камер (Apple iPhone 16 Pro, Samsung S24 Ultra, Pixel 8)\n"
+        "• ✂️ Микро-срезка первых 0.15 сек (ломает совпадение первого ключевого кадра)\n"
+        "• 🔍 Микро-зум и перцептивный шум на каждом кадре\n"
+        "• 🖼️ Мягкая виньетка и цветокоррекция\n"
+        "• 🎵 Микро-эквалайзер звука и акустический сдвиг Sound ID\n"
+        "• ⚡ Аппаратное ускорение NVIDIA NVENC / CPU\n\n"
+        f"🪞 **Зеркальное отражение (Flip):** `{flip_status}`\n"
+        "💡 _Нажмите кнопку ниже или отправьте /flip для переключения зеркала._"
+    )
+    buttons = [[Button.inline(flip_btn_label, data="toggle_flip")]]
+    return text, buttons
+
+
+def get_post_action_buttons():
+    return [[
+        Button.inline("🔄 Другой вариант", data="post_regen"),
+        Button.inline("✂️ Короче", data="post_shorter"),
+    ]]
+
+
+def _cache_post_source(msg_id: int, raw_text: str):
+    if len(recent_post_sources) >= 50:
+        recent_post_sources.pop(next(iter(recent_post_sources)), None)
+    recent_post_sources[msg_id] = raw_text
 
 
 def get_mode_keyboard(user_id: int = None):
@@ -283,7 +316,7 @@ async def start_handler(event):
         )
         return
 
-    user_modes[event.sender_id] = "transcribe"
+    config.set_user_mode(event.sender_id, "transcribe")
     welcome_text = (
         "👋 **Привет! Я многофункциональный бот для контента.**\n\n"
         "⚡ **Выберите нужный режим кнопками ниже:**\n\n"
@@ -309,7 +342,7 @@ async def start_handler(event):
 async def mode_transcribe_handler(event):
     if not check_access(event.sender_id):
         return
-    user_modes[event.sender_id] = "transcribe"
+    config.set_user_mode(event.sender_id, "transcribe")
     await event.respond(
         "🎙️ **Включен режим: Видео в Текст**\n\n"
         "Отправьте мне видео, кружочек, аудиофайл или голосовое сообщение — я переведу речь в текст, создам файл субтитров .srt и документ Word!",
@@ -321,31 +354,32 @@ async def mode_transcribe_handler(event):
 async def mode_uniqueize_handler(event):
     if not check_access(event.sender_id):
         return
-    user_modes[event.sender_id] = "uniqueize"
-    flip_status = "ВКЛЮЧЕНО ✅" if user_flip.get(event.sender_id, False) else "ВЫКЛЮЧЕНО ❌"
-    await event.respond(
-        "✨ **Включен режим: Уникализация видео**\n\n"
-        "Отправьте мне видео или кружочек — я уникализирую его без потери качества для **Instagram Reels, TikTok и Shorts**.\n\n"
-        "🛡️ **Комплекс анти-детект защиты:**\n"
-        "• 📱 Спуфинг мобильных камер (Apple iPhone 16 Pro, Samsung S24 Ultra, Pixel 8)\n"
-        "• ✂️ Микро-срезка первых 0.15 сек (ломает совпадение первого ключевого кадра)\n"
-        "• 🔍 Микро-зум и перцептивный шум на каждом кадре\n"
-        "• 🖼️ Мягкая виньетка и цветокоррекция\n"
-        "• 🎵 Микро-эквалайзер звука и акустический сдвиг Sound ID\n"
-        "• ⚡ Аппаратное ускорение NVIDIA NVENC / CPU\n\n"
-        f"🪞 **Зеркальное отражение (Flip):** `{flip_status}`\n"
-        "💡 _Отправьте команду /flip для включения или выключения зеркала._",
-        buttons=get_mode_keyboard(event.sender_id)
-    )
+    config.set_user_mode(event.sender_id, "uniqueize")
+    text, inline_btns = build_uniqueize_message(event.sender_id)
+    await event.respond(text, buttons=inline_btns)
+
+
+@client.on(events.CallbackQuery(pattern=r'^toggle_flip$'))
+async def flip_inline_callback_handler(event):
+    if not check_access(event.sender_id):
+        await event.answer("⛔ Доступ ограничен.", alert=True)
+        return
+    new_val = not config.get_user_flip(event.sender_id)
+    config.set_user_flip(event.sender_id, new_val)
+    text, inline_btns = build_uniqueize_message(event.sender_id)
+    try:
+        await event.edit(text, buttons=inline_btns)
+    except Exception:
+        pass
+    await event.answer("🪞 Зеркало ВКЛЮЧЕНО ✅" if new_val else "🪞 Зеркало ВЫКЛЮЧЕНО ❌")
 
 
 @client.on(events.NewMessage(incoming=True, pattern=r'^/flip$'))
 async def flip_toggle_handler(event):
     if not check_access(event.sender_id):
         return
-    current = user_flip.get(event.sender_id, False)
-    new_val = not current
-    user_flip[event.sender_id] = new_val
+    new_val = not config.get_user_flip(event.sender_id)
+    config.set_user_flip(event.sender_id, new_val)
     state_str = "ВКЛЮЧЕНО ✅" if new_val else "ВЫКЛЮЧЕНО ❌"
     tip = (
         "Видео будет отражено по горизонтали (зеркальный эффект для максимального обхода алгоритмов соцсетей)."
@@ -362,7 +396,7 @@ async def flip_toggle_handler(event):
 async def mode_post_handler(event):
     if not check_access(event.sender_id):
         return
-    user_modes[event.sender_id] = "post"
+    config.set_user_mode(event.sender_id, "post")
     await event.respond(
         "✍️ **Включен режим: Оформление ТГ-постов**\n\n"
         "Пришлите мне **текстовый черновик, мысли, голосовое сообщение, кружочек или видео** — я распознаю речь и сразу оформлю всё в готовый, живой пост для Telegram!",
@@ -619,6 +653,61 @@ async def makepost_callback_handler(event):
     await process_and_send_post(event, raw_text)
 
 
+@client.on(events.CallbackQuery(pattern=r'^post_(regen|shorter)$'))
+async def post_action_callback_handler(event):
+    if not check_access(event.sender_id):
+        await event.answer("⛔ Доступ ограничен.", alert=True)
+        return
+
+    action = event.pattern_match.group(1).decode("utf-8") if isinstance(event.pattern_match.group(1), bytes) else event.pattern_match.group(1)
+    raw_text = recent_post_sources.get(event.message_id, "")
+    if not raw_text:
+        msg = await event.get_message()
+        if msg and msg.text:
+            raw_text = msg.text.strip()
+
+    if not raw_text:
+        await event.answer("⚠️ Исходный текст не найден. Отправьте его ещё раз.", alert=True)
+        return
+
+    if action == "regen":
+        await event.answer("🔄 Пишу другой вариант...")
+        style_hint = "alt"
+        status_label = "🔄 **Генерирую другой вариант поста...**"
+    else:
+        await event.answer("✂️ Сокращаю пост...")
+        style_hint = "shorter"
+        status_label = "✂️ **Делаю пост короче и ёмче...**"
+
+    try:
+        await event.edit(f"{status_label}\nМодель: `{config.NVIDIA_MODEL}` ⚡", buttons=None)
+    except Exception:
+        pass
+
+    success, html_post, err = await generate_telegram_post(raw_text, style_hint=style_hint)
+    if not success:
+        await event.edit(f"❌ {err or 'Не удалось обновить пост.'}", buttons=get_post_action_buttons())
+        return
+
+    post_btns = get_post_action_buttons()
+    if len(html_post) <= 4000:
+        _cache_post_source(event.message_id, raw_text)
+        try:
+            await event.edit(html_post, parse_mode="html", buttons=post_btns)
+        except Exception:
+            await event.edit(html_post, parse_mode=None, buttons=post_btns)
+    else:
+        part1 = sanitize_telegram_html(html_post[:3800])
+        part2 = sanitize_telegram_html(html_post[3800:])
+        try:
+            await event.edit(part1, parse_mode="html", buttons=None)
+            sent_msg = await event.respond(part2, parse_mode="html", buttons=post_btns)
+        except Exception:
+            await event.edit(part1, parse_mode=None, buttons=None)
+            sent_msg = await event.respond(part2, parse_mode=None, buttons=post_btns)
+        _cache_post_source(sent_msg.id, raw_text)
+
+
 @client.on(events.NewMessage(incoming=True, pattern=r'(?s)^/post(\s+.*)?$'))
 async def post_cmd_handler(event):
     if not check_access(event.sender_id):
@@ -666,7 +755,7 @@ async def text_handler(event):
     if text in ["🎙️ Видео в Текст", "✨ Уникализировать видео", "✍️ Написать ТГ-пост", "🚀 Меню / Старт", "👑 Управление доступом"]:
         return
 
-    current_mode = user_modes.get(event.sender_id, "transcribe")
+    current_mode = config.get_user_mode(event.sender_id)
     if current_mode == "post":
         await process_and_send_post(event, text)
     elif current_mode == "uniqueize":
@@ -695,12 +784,14 @@ async def process_and_send_post(event, raw_text: str):
         await progress_msg.edit(f"❌ {err or 'Не удалось оформить пост.'}")
         return
 
+    post_btns = get_post_action_buttons()
     if len(html_post) <= 4000:
+        _cache_post_source(progress_msg.id, raw_text)
         try:
-            await progress_msg.edit(html_post, parse_mode="html")
+            await progress_msg.edit(html_post, parse_mode="html", buttons=post_btns)
         except Exception:
             try:
-                await progress_msg.edit(html_post, parse_mode=None)
+                await progress_msg.edit(html_post, parse_mode=None, buttons=post_btns)
             except Exception:
                 pass
     else:
@@ -708,10 +799,11 @@ async def process_and_send_post(event, raw_text: str):
         part2 = sanitize_telegram_html(html_post[3800:])
         try:
             await progress_msg.edit(part1, parse_mode="html")
-            await event.respond(part2, parse_mode="html")
+            sent_msg = await event.respond(part2, parse_mode="html", buttons=post_btns)
         except Exception:
             await progress_msg.edit(part1, parse_mode=None)
-            await event.respond(part2, parse_mode=None)
+            sent_msg = await event.respond(part2, parse_mode=None, buttons=post_btns)
+        _cache_post_source(sent_msg.id, raw_text)
 
 
 def get_media_ext(message) -> str:
@@ -802,7 +894,7 @@ async def media_handler(event):
             download_path = Path(downloaded_file)
 
             # Check User Mode
-            user_mode = user_modes.get(message.sender_id, "transcribe")
+            user_mode = config.get_user_mode(message.sender_id)
 
             if user_mode == "uniqueize":
                 # Добавили проверку расширений для .mov, .heic
@@ -822,7 +914,7 @@ async def media_handler(event):
                     buttons=cancel_btn,
                     cancel_event=cancel_event
                 )
-                is_flip = user_flip.get(message.sender_id, False)
+                is_flip = config.get_user_flip(message.sender_id)
                 flip_txt = " + зеркальное отражение" if is_flip else ""
                 await status_msg.edit(
                     f"✨ **Уникализация видео{flip_txt}...**\n"
@@ -919,20 +1011,23 @@ async def media_handler(event):
                     )
                     return
 
+                post_btns = get_post_action_buttons()
                 if len(html_post) <= 4000:
+                    _cache_post_source(status_msg.id, text)
                     try:
-                        await status_msg.edit(html_post, parse_mode="html")
+                        await status_msg.edit(html_post, parse_mode="html", buttons=post_btns)
                     except Exception:
-                        await status_msg.edit(html_post, parse_mode=None)
+                        await status_msg.edit(html_post, parse_mode=None, buttons=post_btns)
                 else:
                     p1 = sanitize_telegram_html(html_post[:3800])
                     p2 = sanitize_telegram_html(html_post[3800:])
                     try:
                         await status_msg.edit(p1, parse_mode="html")
-                        await event.respond(p2, parse_mode="html")
+                        sent_msg = await event.respond(p2, parse_mode="html", buttons=post_btns)
                     except Exception:
                         await status_msg.edit(p1, parse_mode=None)
-                        await event.respond(p2, parse_mode=None)
+                        sent_msg = await event.respond(p2, parse_mode=None, buttons=post_btns)
+                    _cache_post_source(sent_msg.id, text)
                 return
 
             # 4. Save results to temporary files

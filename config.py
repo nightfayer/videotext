@@ -163,3 +163,62 @@ def remove_allowed_user(user_id: int) -> tuple[bool, str]:
 def get_allowed_users_list() -> list[int]:
     """Возвращает отсортированный список всех разрешенных пользователей."""
     return sorted(ALLOWED_USERS)
+
+
+# Persistent user preferences (mode & horizontal flip)
+USER_PREFS_FILE = DATA_DIR / "user_prefs.json"
+_VALID_MODES = {"transcribe", "uniqueize", "post"}
+
+
+def _load_user_prefs() -> dict[str, dict]:
+    if USER_PREFS_FILE.exists():
+        try:
+            with open(USER_PREFS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            print(f"[Config Warning] Ошибка чтения {USER_PREFS_FILE}: {e}", flush=True)
+    return {}
+
+
+def _save_user_prefs():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        temp_file = USER_PREFS_FILE.with_suffix(".tmp")
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(USER_PREFS, f, ensure_ascii=False, indent=2)
+        temp_file.replace(USER_PREFS_FILE)
+    except Exception as e:
+        print(f"[Config Warning] Ошибка сохранения {USER_PREFS_FILE}: {e}", flush=True)
+
+
+USER_PREFS: dict[str, dict] = _load_user_prefs()
+
+
+def get_user_mode(user_id: int) -> str:
+    mode = USER_PREFS.get(str(user_id), {}).get("mode", "transcribe")
+    return mode if mode in _VALID_MODES else "transcribe"
+
+
+def set_user_mode(user_id: int, mode: str) -> None:
+    if mode not in _VALID_MODES:
+        return
+    uid = str(user_id)
+    prefs = USER_PREFS.setdefault(uid, {})
+    if prefs.get("mode") != mode:
+        prefs["mode"] = mode
+        _save_user_prefs()
+
+
+def get_user_flip(user_id: int) -> bool:
+    return bool(USER_PREFS.get(str(user_id), {}).get("flip", False))
+
+
+def set_user_flip(user_id: int, flip: bool) -> None:
+    uid = str(user_id)
+    prefs = USER_PREFS.setdefault(uid, {})
+    val = bool(flip)
+    if prefs.get("flip") != val:
+        prefs["flip"] = val
+        _save_user_prefs()

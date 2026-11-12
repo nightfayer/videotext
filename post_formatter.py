@@ -318,10 +318,12 @@ def md_to_telegram_html(text: str) -> str:
 async def generate_telegram_post(
     raw_text: str,
     max_tokens: int = 4096,
-    temperature: float = 0.7
+    temperature: float = 0.7,
+    style_hint: str = ""
 ) -> Tuple[bool, str, str]:
     """
     Takes raw draft/text and generates a beautifully formatted Telegram post.
+    Optional style_hint ('alt' or 'shorter') adjusts generation style.
     Returns: (success: bool, html_post: str, error_message: str)
     """
     if not config.NVIDIA_API_KEY:
@@ -334,6 +336,21 @@ async def generate_telegram_post(
     if len(clean_text) > 15000:
         clean_text = clean_text[:15000] + "\n\n[...Текст сокращен для соблюдения лимита контекста...]"
 
+    user_prompt = f"Вот текст для оформления в пост:\n\n{clean_text}"
+    if style_hint == "alt":
+        user_prompt = (
+            "Напиши ДРУГОЙ, свежий вариант поста по этому тексту — с иной первой фразой, "
+            "другим акцентом в цитате и новой подачей, сохраняя тёплый лайфстайл-стиль:\n\n"
+            f"{clean_text}"
+        )
+        temperature = max(temperature, 0.88)
+    elif style_hint == "shorter":
+        user_prompt = (
+            "Сделай пост МАКСИМАЛЬНО КОРОТКИМ, ёмким и лёгким (буквально 3–5 коротких строк, "
+            "только самая суть и 1 эмоция/цитата), сохраняя живой стиль:\n\n"
+            f"{clean_text}"
+        )
+
     url = f"{config.NVIDIA_BASE_URL.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {config.NVIDIA_API_KEY}",
@@ -345,7 +362,7 @@ async def generate_telegram_post(
         "model": config.NVIDIA_MODEL,
         "messages": [
             {"role": "system", "content": POST_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Вот текст для оформления в пост:\n\n{clean_text}"}
+            {"role": "user", "content": user_prompt}
         ],
         "chat_template_kwargs": {
             "enable_thinking": True
