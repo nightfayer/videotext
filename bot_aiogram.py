@@ -133,6 +133,8 @@ def get_file_info(message: Message):
 
 recent_transcripts = {}   # msg_id -> full_text (cache up to 50 transcripts for 1-click post generation)
 recent_post_sources = {}  # msg_id -> raw_text (cache up to 50 post drafts for regen/shorten)
+admin_broadcast_wait = set()     # admin_id -> waiting for broadcast message
+admin_broadcast_drafts = {}      # admin_id -> (chat_id, message_id) for preview/send
 
 
 def build_uniqueize_message(user_id: int):
@@ -257,6 +259,9 @@ def build_admin_panel(admin_id: int):
         [
             InlineKeyboardButton(text="➕ Добавить пользователя", callback_data="adm_add_help"),
             InlineKeyboardButton(text="➖ Удалить пользователя", callback_data="adm_del_menu")
+        ],
+        [
+            InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="adm_broadcast")
         ],
         [
             InlineKeyboardButton(text="🔄 Обновить список", callback_data="adm_refresh")
@@ -522,6 +527,118 @@ async def admin_callback_handler(callback: CallbackQuery):
                 await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
             except Exception:
                 pass
+
+    elif data == "adm_broadcast":
+        admin_broadcast_wait.add(callback.from_user.id)
+        admin_broadcast_drafts.pop(callback.from_user.id, None)
+        await callback.message.edit_text(
+            "📢 **Создание уведомления (рассылки)**\n\n"
+            "Пришлите сюда сообщение, которое получат все пользователи из белого списка:\n"
+            "• **Текст** (с любым форматированием Telegram)\n"
+            "• **Картинку** с подписью или без\n"
+            "• **GIF / анимацию** (или короткое видео) с подписью или без\n\n"
+            "💡 _Перед отправкой бот покажет вам предпросмотр и попросит подтверждение._",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отменить", callback_data="adm_bcast_cancel")]
+            ])
+        )
+        await callback.answer()
+
+    elif data == "adm_bcast_cancel":
+        admin_broadcast_wait.discard(callback.from_user.id)
+        admin_broadcast_drafts.pop(callback.from_user.id, None)
+        text, kb = build_admin_panel(callback.from_user.id)
+        try:
+            await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+        except Exception:
+            pass
+        await callback.answer("Рассылка отменена.")
+
+    elif data == "adm_bcast_send":
+        draft = admin_broadcast_drafts.pop(callback.from_user.id, None)
+        admin_broadcast_wait.discard(callback.from_user.id)
+        if not draft:
+            await callback.answer("⚠️ Черновик рассылки устарел или не найден.", show_alert=True)
+            return
+
+        from_chat_id, msg_id = draft
+        recipients = [u for u in config.get_allowed_users_list() if u != callback.from_user.id]
+        if not recipients:
+            await callback.message.edit_text(
+                "ℹ️ **В белом списке пока нет других пользователей, кроме вас.**\n\n"
+                "Добавьте пользователей через `/adduser <ID>`, чтобы делать рассылку.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔙 В админ-панель", callback_data="adm_refresh")]
+                ])
+            )
+            await callback.answer()
+            return
+
+        await callback.answer("🚀 Запускаю рассылку...")
+        try:
+            await callback.message.edit_text(
+                f"📢 **Идёт рассылка ({len(recipients)} польз.)...**",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+        sent_ok = 0
+        failed = 0
+        for uid in recipients:
+            try:
+                await callback.bot.copy_message(
+                    chat_id=uid,
+                    from_chat_id=from_chat_id,
+                    message_id=msg_id
+                )
+                sent_ok += 1
+            except Exception as e:
+                print(f"[Broadcast Warning] Не удалось отправить {uid}: {e}", flush=True)
+                failed += 1
+            await asyncio.sleep(0.05)
+
+        await callback.message.answer(
+            f"📢 **Рассылка завершена!**\n\n"
+            f"✅ Доставлено: `{sent_ok}`\n"
+            f"⚠️ Не доставлено (не запускали бота / блок): `{failed}`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 В админ-панель", callback_data="adm_refresh")]
+            ])
+        )
+
+
+@dp.message(
+    F.from_user.id.func(lambda uid: uid in admin_broadcast_wait),
+    ~(F.text & (F.text.startswith("/") | F.text.in_({
+        "🎙️ Видео в Текст", "✨ Уникализировать видео",
+        "✍️ Написать ТГ-пост", "🚀 Меню / Старт", "👑 Управление доступом"
+    })))
+)
+async def admin_broadcast_capture_handler(message: Message):
+    if not config.is_admin(message.from_user.id):
+        admin_broadcast_wait.discard(message.from_user.id)
+        return
+
+    admin_broadcast_wait.discard(message.from_user.id)
+    admin_broadcast_drafts[message.from_user.id] = (message.chat.id, message.message_id)
+    recipients_count = len([u for u in config.get_allowed_users_list() if u != message.from_user.id])
+
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"✅ Отправить ({recipients_count} польз.)", callback_data="adm_bcast_send")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="adm_bcast_cancel")]
+    ])
+
+    await message.answer("👀 **Предпросмотр уведомления** (так его увидят пользователи):", parse_mode="Markdown")
+    await message.bot.copy_message(
+        chat_id=message.chat.id,
+        from_chat_id=message.chat.id,
+        message_id=message.message_id,
+        reply_markup=confirm_kb
+    )
 
 
 @dp.message(Command("help"))

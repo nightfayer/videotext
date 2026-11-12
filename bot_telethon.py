@@ -211,6 +211,8 @@ class ThrottledUniquifyProgress:
 active_tasks = {}
 recent_transcripts = {}   # msg_id -> full_text (cache up to 50 transcripts for 1-click post generation)
 recent_post_sources = {}  # msg_id -> raw_text (cache up to 50 post drafts for regen/shorten)
+admin_broadcast_wait = set()     # admin_id -> waiting for broadcast message
+admin_broadcast_drafts = {}      # admin_id -> Telethon Message object for preview/send
 
 
 def build_uniqueize_message(user_id: int):
@@ -297,6 +299,9 @@ def build_admin_panel(admin_id: int):
         [
             Button.inline("➕ Добавить пользователя", data="adm_add_help"),
             Button.inline("➖ Удалить пользователя", data="adm_del_menu")
+        ],
+        [
+            Button.inline("📢 Сделать рассылку", data="adm_broadcast")
         ],
         [
             Button.inline("🔄 Обновить список", data="adm_refresh")
@@ -558,6 +563,121 @@ async def admin_callback_handler(event):
             except Exception:
                 pass
 
+    elif data == "adm_broadcast":
+        admin_broadcast_wait.add(event.sender_id)
+        admin_broadcast_drafts.pop(event.sender_id, None)
+        await event.edit(
+            "📢 **Создание уведомления (рассылки)**\n\n"
+            "Пришлите сюда сообщение, которое получат все пользователи из белого списка:\n"
+            "• **Текст** (с любым форматированием Telegram)\n"
+            "• **Картинку** с подписью или без\n"
+            "• **GIF / анимацию** (или короткое видео) с подписью или без\n\n"
+            "💡 _Перед отправкой бот покажет вам предпросмотр и попросит подтверждение._",
+            buttons=[[Button.inline("❌ Отменить", data="adm_bcast_cancel")]]
+        )
+        await event.answer()
+
+    elif data == "adm_bcast_cancel":
+        admin_broadcast_wait.discard(event.sender_id)
+        admin_broadcast_drafts.pop(event.sender_id, None)
+        text, buttons = build_admin_panel(event.sender_id)
+        try:
+            await event.edit(text, buttons=buttons)
+        except Exception:
+            pass
+        await event.answer("Рассылка отменена.")
+
+    elif data == "adm_bcast_send":
+        draft_msg = admin_broadcast_drafts.pop(event.sender_id, None)
+        admin_broadcast_wait.discard(event.sender_id)
+        if not draft_msg:
+            await event.answer("⚠️ Черновик рассылки устарел или не найден.", alert=True)
+            return
+
+        recipients = [u for u in config.get_allowed_users_list() if u != event.sender_id]
+        if not recipients:
+            await event.edit(
+                "ℹ️ **В белом списке пока нет других пользователей, кроме вас.**\n\n"
+                "Добавьте пользователей через `/adduser <ID>`, чтобы делать рассылку.",
+                buttons=[[Button.inline("🔙 В админ-панель", data="adm_refresh")]]
+            )
+            await event.answer()
+            return
+
+        await event.answer("🚀 Запускаю рассылку...")
+        try:
+            await event.edit(f"📢 **Идёт рассылка ({len(recipients)} польз.)...**", buttons=None)
+        except Exception:
+            pass
+
+        media_file = (
+            draft_msg.media
+            if (draft_msg.media and not isinstance(draft_msg.media, types.MessageMediaWebPage))
+            else None
+        )
+        caption_or_text = draft_msg.message or ""
+        entities = draft_msg.entities
+
+        sent_ok = 0
+        failed = 0
+        for uid in recipients:
+            try:
+                await client.send_message(
+                    uid,
+                    message=caption_or_text,
+                    file=media_file,
+                    formatting_entities=entities,
+                    link_preview=bool(isinstance(draft_msg.media, types.MessageMediaWebPage))
+                )
+                sent_ok += 1
+            except Exception as e:
+                print(f"[Broadcast Warning] Не удалось отправить {uid}: {e}", flush=True)
+                failed += 1
+            await asyncio.sleep(0.05)
+
+        await event.respond(
+            f"📢 **Рассылка завершена!**\n\n"
+            f"✅ Доставлено: `{sent_ok}`\n"
+            f"⚠️ Не доставлено (не запускали бота / блок): `{failed}`",
+            buttons=[[Button.inline("🔙 В админ-панель", data="adm_refresh")]]
+        )
+
+
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.sender_id in admin_broadcast_wait and config.is_admin(e.sender_id)))
+async def admin_broadcast_capture_handler(event):
+    txt = (event.text or "").strip()
+    if txt.startswith("/") or txt in [
+        "🎙️ Видео в Текст", "✨ Уникализировать видео",
+        "✍️ Написать ТГ-пост", "🚀 Меню / Старт", "👑 Управление доступом"
+    ]:
+        admin_broadcast_wait.discard(event.sender_id)
+        return
+
+    admin_broadcast_wait.discard(event.sender_id)
+    admin_broadcast_drafts[event.sender_id] = event.message
+    recipients_count = len([u for u in config.get_allowed_users_list() if u != event.sender_id])
+
+    media_file = (
+        event.message.media
+        if (event.message.media and not isinstance(event.message.media, types.MessageMediaWebPage))
+        else None
+    )
+    confirm_btns = [
+        [Button.inline(f"✅ Отправить ({recipients_count} польз.)", data="adm_bcast_send")],
+        [Button.inline("❌ Отменить", data="adm_bcast_cancel")]
+    ]
+
+    await event.respond("👀 **Предпросмотр уведомления** (так его увидят пользователи):")
+    await client.send_message(
+        event.chat_id,
+        message=event.message.message or "",
+        file=media_file,
+        formatting_entities=event.message.entities,
+        link_preview=bool(isinstance(event.message.media, types.MessageMediaWebPage)),
+        buttons=confirm_btns
+    )
+    raise events.StopPropagation
+
 
 @client.on(events.NewMessage(incoming=True, pattern=r'^/help$'))
 async def help_handler(event):
@@ -738,7 +858,7 @@ async def post_cmd_handler(event):
     await process_and_send_post(event, raw_text)
 
 
-@client.on(events.NewMessage(incoming=True, func=lambda e: not is_media_message(e) and not (e.text or "").startswith('/')))
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.sender_id not in admin_broadcast_wait and not is_media_message(e) and not (e.text or "").startswith('/')))
 async def text_handler(event):
     if not check_access(event.sender_id):
         await event.respond(
@@ -822,7 +942,7 @@ def get_media_ext(message) -> str:
     return ".mp4"
 
 
-@client.on(events.NewMessage(incoming=True, func=is_media_message))
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.sender_id not in admin_broadcast_wait and is_media_message(e)))
 async def media_handler(event):
     if not check_access(event.sender_id):
         await event.reply(
