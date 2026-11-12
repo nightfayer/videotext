@@ -141,7 +141,7 @@ def build_uniquify_command(
 
     vf_filters = [
         # Cap 4K/heavy video to max 1080p (ideal for Reels/TikTok/Shorts, saves 75% RAM and runs 20x faster)
-        "scale='if(gte(iw,ih),min(1920,iw),min(1080,iw))':'if(gte(iw,ih),min(1080,ih),min(1920,ih))':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+        "scale='if(gte(iw,ih),min(1920,iw),min(1080,iw))':'if(gte(iw,ih),min(1080,ih),min(1920,ih))':force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos"
     ]
     if trim_start > 0:
         vf_filters.extend([f"trim=start={trim_start}", "setpts=PTS-STARTPTS"])
@@ -150,7 +150,7 @@ def build_uniquify_command(
         vf_filters.append("hflip")
 
     vf_filters.extend([
-        f"scale=ceil(iw*{zoom}/2)*2:ceil(ih*{zoom}/2)*2",
+        f"scale=ceil(iw*{zoom}/2)*2:ceil(ih*{zoom}/2)*2:flags=lanczos",
         f"rotate={angle_deg}*PI/180:ow=iw:oh=ih",
         "crop=iw:ih",
         f"eq=contrast={contrast}:brightness={brightness}:saturation={saturation}",
@@ -183,7 +183,9 @@ def build_uniquify_command(
     if use_nvenc:
         cmd.extend([
             "-c:v", "h264_nvenc",
-            "-cq", "19",
+            "-rc", "vbr",
+            "-cq", "18",
+            "-b:v", "0",
             "-preset", "p4",
         ])
     else:
